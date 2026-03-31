@@ -94,6 +94,12 @@
       >
 <link rel="preconnect" href="https://fonts.googleapis.com">
       <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
       <link
         rel="preload"
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
@@ -143,8 +149,23 @@
         as="style"
       >
 
-      <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+      <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" as="style" data-rel="stylesheet">
 <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css"></noscript>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    let fontAwesomeLink = document.querySelector('link[data-rel="stylesheet"]');
+    let loadFontAwesome = function() {
+      if (fontAwesomeLink) {
+        fontAwesomeLink.rel = 'stylesheet';
+        fontAwesomeLink.removeAttribute('data-rel');
+        document.body.removeEventListener('touchstart', loadFontAwesome);
+        document.body.removeEventListener('mousemove', loadFontAwesome);
+      }
+    };
+    document.body.addEventListener('touchstart', loadFontAwesome);
+    document.body.addEventListener('mousemove', loadFontAwesome);
+  });
+</script>
 
       <link
         rel="preload"
