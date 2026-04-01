@@ -1,6 +1,9 @@
 <!doctype html>
 <html class="js" lang="{{ request.locale.iso_code }}">
   <head>
+    <link rel="preload" href="{{ 'shopify://shop_images/1920x600_3.jpg' | asset_url }}" as="image">
+    <link rel="preload" href="{{ 'shopify://shop_images/860_960_47342e1e-d508-4ae4-ba66-56e3530356db.jpg' | asset_url }}" as="image">
+
     
     <script>
       /* start spd config */ window._spt_delay_keywords = [
@@ -92,14 +95,6 @@
         loading="eager"
         fetchpriority="high"
       >
-<link rel="preconnect" href="https://fonts.googleapis.com">
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-      <link rel="preconnect" href="https://fonts.googleapis.com">
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-      <link rel="preconnect" href="https://fonts.googleapis.com">
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-      <link rel="preconnect" href="https://fonts.googleapis.com">
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
       <link
         rel="preload"
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
@@ -149,24 +144,8 @@
         as="style"
       >
 
-      <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" as="style" data-rel="stylesheet">
+      <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
 <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css"></noscript>
-<script>
-  document.addEventListener('DOMContentLoaded', function() {
-    let fontAwesomeLink = document.querySelector('link[data-rel="stylesheet"]');
-    let loadFontAwesome = function() {
-      if (fontAwesomeLink) {
-        fontAwesomeLink.rel = 'stylesheet';
-        fontAwesomeLink.removeAttribute('data-rel');
-        document.body.removeEventListener('touchstart', loadFontAwesome);
-        document.body.removeEventListener('mousemove', loadFontAwesome);
-      }
-    };
-    document.body.addEventListener('touchstart', loadFontAwesome);
-    document.body.addEventListener('mousemove', loadFontAwesome);
-  });
-</script>
-
       <link
         rel="preload"
         href="https://cdn.shopify.com/extensions/ec9e7230-7fc7-4e5c-84a3-54f72c7bef6d/wizzy-search-filters-52/assets/wizzyCustom.css"
