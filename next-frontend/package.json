@@ -9,10 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.81.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1021.0",
     "@google/generative-ai": "^0.24.1",
     "lighthouse": "^13.0.3",
     "lucide-react": "^1.7.0",
     "next": "16.2.1",
+    "openai": "^6.33.0",
     "puppeteer": "^24.40.0",
     "react": "19.2.4",
     "react-diff-viewer-continued": "^4.2.0",

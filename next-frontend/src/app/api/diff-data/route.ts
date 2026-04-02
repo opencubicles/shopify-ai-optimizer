@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "File path is required" }, { status: 400 });
         }
 
-        const themePath = "/var/www/html/shopify-ai-optimizer/ella-bella";
+        const themePath = process.env.THEME_PATH || path.join(process.cwd(), "..", "theme");
         const fullPath = path.join(themePath, filePath);
 
         if (!fs.existsSync(fullPath)) {

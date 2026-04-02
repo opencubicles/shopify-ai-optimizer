@@ -47,7 +47,9 @@ import {
   Loader2,
   Terminal,
   Cpu,
-  ZapOff
+  ZapOff,
+  Clock,
+  Edit3,
 } from "lucide-react";
 import styles from "./page.module.css";
 
@@ -62,6 +64,9 @@ export default function AutoDeployDashboard() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showFullReport, setShowFullReport] = useState(false);
+  const [globalFixes, setGlobalFixes] = useState<{ executiveSummary: string, fixes: any[] } | null>(null);
+  const [globalLoading, setGlobalLoading] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
 
   const [fixesIdentified, setFixesIdentified] = useState(false);
   const [fixLog, setFixLog] = useState<any[]>([]);
@@ -85,6 +90,7 @@ export default function AutoDeployDashboard() {
   const [diffLoading, setDiffLoading] = useState(false);
 
   const [pushLoading, setPushLoading] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -106,7 +112,32 @@ export default function AutoDeployDashboard() {
       const data = await response.json();
       setResult(data);
       setFixesIdentified(true);
+
+      // Save audit to disk for AI-assisted fix generation
+      await fetch("/api/save-audit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+
+      // Try to load any pre-generated fixes
+      handleLoadFixes();
     } catch (err: any) { setError(err.message); } finally { setLoading(false); setActiveSteps([]); setCurrentAction(null); }
+  };
+
+  const handleLoadFixes = async () => {
+    setGlobalLoading(true);
+    setGlobalError(null);
+    try {
+      const res = await fetch("/api/load-fixes");
+      const data = await res.json();
+      if (!res.ok) {
+        // Not ready yet — show a friendly pending state
+        setGlobalError("__PENDING__");
+        return;
+      }
+      setGlobalFixes(data);
+    } catch (e: any) {
+      setGlobalError("__PENDING__");
+    } finally {
+      setGlobalLoading(false);
+    }
   };
 
   const handleIdentityUnitFix = async (issue: any) => {
@@ -114,6 +145,7 @@ export default function AutoDeployDashboard() {
     setUnitReviewLoading(true);
     setShowUnitReview(true);
     setUnitData(null);
+    setIsEditing(false);
     setActiveSteps(["Scanning theme directory...", "Mapping PageSpeed URLs to theme files...", "Architecting surgical fix..."]);
     setCurrentAction("AI Analysis");
     try {
@@ -126,7 +158,12 @@ export default function AutoDeployDashboard() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to identify unit fix");
-      setUnitData({ ...data, issue });
+      setUnitData({
+        ...data,
+        issue,
+        riskLevel: data.riskLevel,
+        isBreaking: data.isBreaking
+      });
       setActiveSteps(data.steps || []);
     } catch (err: any) {
       alert(`Error: ${err.message}`);
@@ -146,10 +183,24 @@ export default function AutoDeployDashboard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: result?.url, issueId: unitData.details?.issueId, title: unitData.title, details: unitData.details, device, previewOnly: false
+          url: result?.url,
+          issueId: unitData.details?.issueId,
+          title: unitData.title,
+          details: unitData.details,
+          device,
+          previewOnly: false,
+          originalSnippet: unitData.originalSnippet,
+          fixedSnippet: unitData.fixedSnippet,
+          filePath: unitData.fileChanged
         })
       });
       const data = await response.json();
+
+      if (response.ok && !data.success) {
+        alert(`❌ Surgical Patch Failed: ${data.error || "The original code snippet could not be found in the file."}`);
+        return;
+      }
+
       if (!response.ok) throw new Error(data.detail || "Failed to apply fix");
 
       setFixLog(prev => [data, ...prev]);
@@ -159,8 +210,13 @@ export default function AutoDeployDashboard() {
         setActiveSteps([...(data.steps || []), "Auto-Deploying to Shopify Theme..."]);
         setCurrentAction("Live Deployment");
         const pushRes = await fetch("/api/theme-push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filePath: data.fileChanged }) });
+
+        if (!pushRes.ok) {
+          const pushData = await pushRes.json();
+          throw new Error(pushData.detail || "Auto-Deploy failed");
+        }
+
         const pushData = await pushRes.json();
-        if (!pushRes.ok) throw new Error(pushData.detail || "Auto-Deploy failed");
         setActiveSteps(pushData.steps || []);
         alert(`✅ Optimization Applied & Deployed to Shopify!`);
       } else {
@@ -185,6 +241,88 @@ export default function AutoDeployDashboard() {
     } catch (err: any) { alert(`❌ Push Error: ${err.message}`); } finally { setPushLoading(null); setActiveSteps([]); setCurrentAction(null); }
   };
 
+  const handleApplyGlobalFix = async (fix: any) => {
+    setUnitReviewLoading(true);
+    setShowUnitReview(true);
+    setUnitData(null);
+    setIsEditing(false);
+    setActiveSteps(["Retrieving global suggestion context...", "Validating surgical patch..."]);
+    setCurrentAction("Global Fix Application");
+
+    try {
+      // We reuse the unit review modal for global fixes too
+      const normalizeSnippet = (s: string) => s ? s.replace(/\\n/g, '\n').replace(/\\t/g, '\t') : '';
+      setUnitData({
+        fileChanged: fix.filePath,
+        originalSnippet: normalizeSnippet(fix.originalSnippet),
+        fixedSnippet: normalizeSnippet(fix.fixedSnippet),
+        impact: fix.explanation,
+        details: { issueId: fix.id },
+        title: fix.title,
+        riskLevel: fix.riskLevel,
+        isBreaking: fix.isBreaking
+      });
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+      setShowUnitReview(false);
+    } finally {
+      setUnitReviewLoading(false);
+    }
+  };
+
+  const handleBatchApplyLowRisk = async () => {
+    if (!globalFixes || !globalFixes.fixes) return;
+    const lowRiskFixes = globalFixes.fixes.filter((f: any) => f.riskLevel === "Low");
+    if (lowRiskFixes.length === 0) {
+      alert("No low-risk optimizations identified for batch processing.");
+      return;
+    }
+    if (!window.confirm(`Initialize Precision Batch Decompression? This will apply all ${lowRiskFixes.length} Low-Risk fixes at once.`)) return;
+
+    setPushLoading("batch");
+    setCurrentAction("Batch Optimization");
+    setActiveSteps(["Initalizing Antigravity Batch Engine..."]);
+
+    try {
+      let successCount = 0;
+      for (let i = 0; i < lowRiskFixes.length; i++) {
+        const fix = lowRiskFixes[i];
+        setActiveSteps(prev => [...prev, `[${i + 1}/${lowRiskFixes.length}] Applying: ${fix.title}...`]);
+        const response = await fetch("/api/apply-fix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: result?.url,
+            issueId: fix.id,
+            title: fix.title,
+            details: { issueId: fix.id },
+            device,
+            previewOnly: false,
+            originalSnippet: fix.originalSnippet,
+            fixedSnippet: fix.fixedSnippet,
+            filePath: fix.filePath
+          })
+        });
+        const data = await response.json();
+        if (response.ok && data.success) {
+          setFixLog(prev => [data, ...prev]);
+          successCount++;
+        }
+      }
+      setActiveSteps(prev => [...prev, `Batch sequence complete. ${successCount} optimizations applied.`]);
+      alert(`✅ Mission Success: Applied ${successCount} optimizations to local theme.`);
+      if (autoDeploy) {
+        handlePushToShopify();
+      }
+    } catch (e) {
+      alert("Batch execution interrupted. Check connection.");
+    } finally {
+      setPushLoading(null);
+      setActiveSteps([]);
+      setCurrentAction(null);
+    }
+  };
+
   const handleShowDiffViewer = async (filePath: string) => {
     setDiffLoading(true); setShowDiff(true); setDiffData(null);
     try {
@@ -193,6 +331,12 @@ export default function AutoDeployDashboard() {
       setDiffData({ old: data.oldCode, new: data.newCode, fileName: data.fileName, status: data.status });
     } catch (e) { alert("Failed to load diff."); } finally { setDiffLoading(false); }
   };
+
+  const lowRiskFixes = globalFixes?.fixes?.filter((f: any) => f.riskLevel === "Low") || [];
+  const totalBatchSavings = lowRiskFixes.reduce((acc: number, f: any) => {
+    const val = parseInt(f.savings?.replace(/[^0-9]/g, '') || "0");
+    return acc + val;
+  }, 0);
 
   return (
     <main className={styles.container}>
@@ -227,7 +371,7 @@ export default function AutoDeployDashboard() {
         <section className={styles.resultContainer + " animate-slide-up"}>
           <div className={styles.resultHeader}>
             <div className={styles.resultInfo}><h2><a href={result.url} target="_blank" rel="noreferrer">{result.url}</a></h2><span>{new Date(result.fetchTime).toLocaleString()} | {result.device.toUpperCase()}</span></div>
-            <div className={styles.resultActions}><button className={styles.fullReportBtn} onClick={() => setShowFullReport(true)}>Report <ExternalLink size={16} /></button></div>
+            <div className={styles.resultActions}>{result.html && <button className={styles.fullReportBtn} onClick={() => setShowFullReport(true)}>Report <ExternalLink size={16} /></button>}</div>
           </div>
 
           <div className={styles.gridScores}>
@@ -239,7 +383,7 @@ export default function AutoDeployDashboard() {
               <div className={styles.historyHeader}><div className={styles.historyTitleRow}><History size={18} color="var(--success)" /><h4>Precision Trace Log ({fixLog.length})</h4></div><button className={styles.pushBtn} onClick={() => handlePushToShopify()} disabled={pushLoading === "all"}>{pushLoading === "all" ? <Loader2 className={styles.spin} size={14} /> : <CloudUpload size={16} />} Sync All Changes</button></div>
               <div className={styles.historyList}>
                 {fixLog.map((log, idx) => (
-                  <div key={idx} className={styles.historyItem}><div className={styles.historyItemMain}><div className={styles.itemSubject}><span>✓ <strong>{log.fileChanged}</strong> updated.</span><small>{log.summary}</small></div><div className={styles.itemActions}><button className={styles.diffViewBtn} onClick={() => handleShowDiffViewer(log.fileChanged)}><FileSearch size={14} /> See Diff</button><button className={styles.targetedPushBtn} onClick={() => handlePushToShopify(log.fileChanged)} disabled={pushLoading === log.fileChanged}>{pushLoading === log.fileChanged ? <Loader2 className={styles.spin} size={12} /> : <Upload size={12} />} Re-Push Unit</button></div></div></div>
+                  <div key={idx} className={styles.historyItem}><div className={styles.historyItemMain}><div className={styles.itemSubject}><span>✓ <strong>{log.fileChanged}</strong> updated.</span><small>{log.summary}</small>{log.riskLevel && <span className={`${styles.historyRisk} ${styles['risk' + log.riskLevel]}`}>Applied as {log.riskLevel} Case</span>}</div><div className={styles.itemActions}><button className={styles.diffViewBtn} onClick={() => handleShowDiffViewer(log.fileChanged)}><FileSearch size={14} /> See Diff</button><button className={styles.targetedPushBtn} onClick={() => handlePushToShopify(log.fileChanged)} disabled={pushLoading === log.fileChanged}>{pushLoading === log.fileChanged ? <Loader2 className={styles.spin} size={12} /> : <Upload size={12} />} Re-Push Unit</button></div></div></div>
                 ))}
               </div>
             </div>
@@ -247,9 +391,124 @@ export default function AutoDeployDashboard() {
 
           <div className={styles.metricsWrapper + " glass-card"}><h3>Key Metrics</h3><div className={styles.metricsGrid}><MetricCard title="First Contentful Paint" value={result.metrics.fcp} /><MetricCard title="Largest Contentful Paint" value={result.metrics.lcp} type="lcp" /><MetricCard title="Total Blocking Time" value={result.metrics.tbt} type="tbt" /><MetricCard title="Cumulative Layout Shift" value={result.metrics.cls} type="cls" /><MetricCard title="Speed Index" value={result.metrics.si} /><MetricCard title="Time to Interactive" value={result.metrics.tti} /></div></div>
 
+          {globalLoading ? (
+            <div className={styles.globalLoadingCard + " glass-card"}>
+              <Loader2 className={styles.spin} size={24} />
+              <p>Antigravity is architecting a global performance strategy...</p>
+            </div>
+          ) : globalError === "__PENDING__" ? (
+            <div className={styles.globalErrorCard + " glass-card"}>
+              <Bot size={28} color="var(--primary)" />
+              <div className={styles.globalErrorText}>
+                <h4>⏳ Fixes Not Generated Yet</h4>
+                <p>The audit has been saved. Share your audit data with the AI assistant and ask it to generate fixes. Once generated, click <strong>Load Fixes</strong> below.</p>
+                <button onClick={handleLoadFixes} className={styles.retryBtn}>
+                  <RefreshCw size={14} /> Load Fixes
+                </button>
+              </div>
+            </div>
+          ) : globalFixes && (
+            <div className={styles.globalPlanSection + " glass-card animate-slide-up"}>
+              <div className={styles.globalHeader}>
+                <Sparkle size={24} color="var(--primary)" />
+                <div className={styles.globalHeaderText}>
+                  <div className={styles.globalTitleRow}>
+                    <h3>Antigravity Global Optimization Plan</h3>
+                    {result && (
+                      <div className={styles.globalActions}>
+                        <button
+                          className={styles.batchBtn}
+                          onClick={handleBatchApplyLowRisk}
+                          disabled={globalLoading || pushLoading === "batch" || lowRiskFixes.length === 0}
+                        >
+                          {pushLoading === "batch" ? <Loader2 className={styles.spin} size={14} /> : <Layers size={14} />}
+                          Batch Apply Low-Risk {totalBatchSavings > 0 && `(~${totalBatchSavings}ms)`}
+                        </button>
+                        <button
+                          className={styles.refreshStrategyBtn}
+                          onClick={handleLoadFixes}
+                          disabled={globalLoading}
+                        >
+                          {globalLoading ? <RefreshCw className={styles.spin} size={14} /> : <RefreshCw size={14} />}
+                          Refresh Fixes
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <p>{globalFixes.executiveSummary}</p>
+                </div>
+              </div>
+              <div className={styles.globalFixList}>
+                {globalFixes.fixes?.map((fix, i) => (
+                  <div key={i} className={styles.globalFixItem + " glass-card animate-slide-up"} style={{ animationDelay: `${i * 0.1}s` }}>
+                    <div className={styles.fixInfo}>
+                      <div className={styles.fixTitleRow}>
+                        <div className={styles.fixBadge}>{fix.category.toUpperCase()}</div>
+                        <h4>{fix.title}</h4>
+                        {fix.isBreaking && <div className={styles.breakingBadge}>BREAKING</div>}
+                      </div>
+
+                      <div className={styles.fixMetaRow}>
+                        <div className={styles.fixMetaItem}>
+                          <Zap size={12} className={styles['impact' + fix.impact]} />
+                          <b>Impact:</b> <span className={styles['impact' + fix.impact]}>{fix.impact}</span>
+                        </div>
+                        <div className={styles.fixMetaItem}>
+                          <Clock size={12} />
+                          <b>Savings:</b> <span className={styles.savingsBadge}>{fix.savings}</span>
+                        </div>
+                        <div className={`${styles.riskBadge} ${styles['risk' + fix.riskLevel]}`}>
+                          Risk: {fix.riskLevel}
+                        </div>
+                        {fix._validation && (
+                          <div className={`${styles.validationBadge} ${fix._validation === 'VERIFIED' ? styles.validationOk : fix._validation === 'VERIFIED_NORMALIZED' ? styles.validationOk : fix._validation === 'ALREADY_APPLIED' ? styles.validationWarn : styles.validationFail}`}>
+                            {fix._validation === 'VERIFIED' ? '✅ Verified' : fix._validation === 'VERIFIED_NORMALIZED' ? '⚠️ Approx Match' : fix._validation === 'ALREADY_APPLIED' ? '🔄 Already Applied' : '❌ Not Found on Disk'}
+                          </div>
+                        )}
+                      </div>
+
+                      <p className={styles.fixExplanation}>{fix.explanation}</p>
+                      {fix._warning && (
+                        <div className={styles.fixWarning}>⚠️ {fix._warning}</div>
+                      )}
+                      <div className={styles.fixPathRow}>
+                        <code className={styles.fixPath}><FileCode size={12} /> {fix.filePath}</code>
+                      </div>
+                    </div>
+                    <button
+                      className={styles.reviewFixBtn}
+                      onClick={() => handleApplyGlobalFix(fix)}
+                      disabled={fix._validation === 'FILE_NOT_FOUND'}
+                    >
+                      Review Fix <Wand2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className={styles.suggestionSection}>
             <div className={styles.suggestionHeader}><TrendingUp size={24} color="var(--primary)" /><h3>Audit Opportunity Trace</h3><span className={styles.badge}>Live Action Engine</span></div>
-            <div className={styles.suggestionList}>{result.opportunities.map(opp => <SuggestionItem key={opp.id} title={opp.title} savings={opp.displayValue} impact={opp.score < 0.5 ? "High" : "Medium"} desc={opp.description} canFix={fixesIdentified} onFix={() => handleIdentityUnitFix(opp)} />)}</div>
+            <div className={styles.suggestionList}>
+              {result.opportunities.map(opp => {
+                const associatedFix = globalFixes?.fixes?.find(f => f.linkedAuditId === opp.id);
+                return (
+                  <SuggestionItem
+                    key={opp.id}
+                    oppId={opp.id}
+                    title={opp.title}
+                    savings={opp.displayValue}
+                    impact={opp.score < 0.5 ? "High" : "Medium"}
+                    desc={opp.description}
+                    canFix={fixesIdentified}
+                    onFix={() => handleIdentityUnitFix(opp)}
+                    aiFix={associatedFix}
+                    onApplyAiFix={handleApplyGlobalFix}
+                  />
+                );
+              })}
+            </div>
           </div>
         </section>
       )}
@@ -260,7 +519,21 @@ export default function AutoDeployDashboard() {
           <div className={styles.modalContent + " " + styles.diffCheckerModal}>
             <div className={styles.modalHeader}>
               <div className={styles.aiHeaderTitle}><Cpu size={24} color="var(--primary)" /><h3>Precision Fix: {unitData?.fileChanged || "Targeting Asset..."}</h3></div>
-              <div className={styles.diffLabels}><div className={styles.labelOld}>Current</div><ArrowRight size={14} /><div className={styles.labelNew}>Optimized</div></div>
+              <div className={styles.diffLabels}>
+                {!isEditing && (
+                  <>
+                    <div className={styles.labelOld}>Current</div>
+                    <ArrowRight size={14} />
+                    <div className={styles.labelNew}>Optimized</div>
+                  </>
+                )}
+                <button
+                  className={`${styles.manualEditBtn} ${isEditing ? styles.active : ""}`}
+                  onClick={() => setIsEditing(!isEditing)}
+                >
+                  <Edit3 size={14} /> {isEditing ? "View Diff" : "Manual Edit"}
+                </button>
+              </div>
               <button className={styles.closeBtn} onClick={() => setShowUnitReview(false)}><X size={24} /></button>
             </div>
             <div className={styles.diffContainer}>
@@ -276,10 +549,63 @@ export default function AutoDeployDashboard() {
                 </div>
               ) : (
                 <div className={styles.unitLayout}>
-                  <div className={styles.diffScroll}><ReactDiffViewer oldValue={unitData?.originalSnippet || ""} newValue={unitData?.fixedSnippet || ""} splitView={true} compareMethod={DiffMethod.CHARS} styles={diffStyles} /></div>
+                  {isEditing ? (
+                    <div className={styles.editorLayout}>
+                      <div className={styles.editorPane}>
+                        <div className={styles.paneHeader}>
+                          <span>ORIGINAL SNIPPET (READ-ONLY)</span>
+                          <span style={{ color: 'var(--fail)' }}>Characters: {unitData?.originalSnippet?.length || 0}</span>
+                        </div>
+                        <div className={styles.readOnlyArea}>{unitData?.originalSnippet}</div>
+                      </div>
+                      <div className={styles.editorPane}>
+                        <div className={styles.paneHeader}>
+                          <span style={{ color: 'var(--primary)' }}>CUSTOM OPTIMIZATION (EDITABLE)</span>
+                          <span style={{ color: 'var(--success)' }}>Characters: {unitData?.fixedSnippet?.length || 0}</span>
+                        </div>
+                        <textarea
+                          className={styles.codeTextArea}
+                          value={unitData?.fixedSnippet || ""}
+                          onChange={(e) => setUnitData({ ...unitData, fixedSnippet: e.target.value })}
+                          spellCheck={false}
+                          placeholder="Type your manual fix here..."
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={styles.diffScroll}><ReactDiffViewer oldValue={unitData?.originalSnippet || ""} newValue={unitData?.fixedSnippet || ""} splitView={true} useDarkTheme={true} compareMethod={DiffMethod.CHARS} styles={diffStyles} /></div>
+                  )}
                   <div className={styles.unitFooter}>
-                    <div className={styles.unitImpact}><Zap size={18} color="var(--primary)" /><div><strong>Trace Strategy</strong><p>{unitData?.impact || "Ready for deployment to theme ID 185064653119."}</p></div></div>
+                    <div className={styles.unitImpact}>
+                      <Zap size={18} color="var(--primary)" />
+                      <div>
+                        <strong>Trace Strategy</strong>
+                        <p>{unitData?.impact || "Ready for deployment to theme ID 185064653119."}</p>
+                        {unitData?.riskLevel && (
+                          <div className={`${styles.modalRiskRow} ${styles['risk' + unitData.riskLevel]}`}>
+                            {unitData.isBreaking ? '⚠️ CRITICAL/BREAKING' : 'Risk assessment'}: {unitData.riskLevel}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                     <div className={styles.unitActions}>
+                      {autoDeploy && (
+                        <div
+                          className={styles.cmdPreview}
+                          style={{ cursor: 'pointer' }}
+                          title="Click to copy deployment command"
+                          onClick={() => {
+                            const cmd = `shopify theme push --store thriveco-in.myshopify.com --theme 153290309772 --only ${unitData?.fileChanged || 'all'} --force`;
+                            navigator.clipboard.writeText(cmd);
+                            alert("Deployment command copied to clipboard!");
+                          }}
+                        >
+                          <Terminal size={12} color="var(--primary)" />
+                          <code>
+                            shopify theme push --store thriveco-in.myshopify.com --theme 153290309772 --only {unitData?.fileChanged} --force
+                          </code>
+                        </div>
+                      )}
                       <div className={styles.autoDeployToggle} onClick={() => setAutoDeploy(!autoDeploy)}>
                         <div className={autoDeploy ? styles.toggleOn : styles.toggleOff}>
                           {autoDeploy ? <Zap size={14} /> : <ZapOff size={14} />}
@@ -287,7 +613,7 @@ export default function AutoDeployDashboard() {
                         <span>Auto-Deploy Fix</span>
                       </div>
                       <button className={styles.applyUnitBtn} onClick={handleApplyUnitFix}>
-                        {autoDeploy ? "Apply & Sync Live" : "Apply to Local Disk"} <Sparkle size={14} />
+                        {autoDeploy ? "Execute Sync Command" : "Apply to Local Disk"} <Sparkle size={14} />
                       </button>
                     </div>
                   </div>
@@ -315,7 +641,32 @@ export default function AutoDeployDashboard() {
   );
 }
 
-const diffStyles = { variables: { dark: { diffViewerBackground: '#0d0d12' } }, line: { padding: '4px 0' }, gutter: { padding: '0 15px', minWidth: '60px' } };
+const diffStyles = {
+  variables: {
+    dark: {
+      diffViewerBackground: '#0d0d12',
+      diffViewerColor: '#e2e8f0',
+      addedBackground: 'rgba(52, 211, 153, 0.1)',
+      addedColor: '#34d399',
+      removedBackground: 'rgba(248, 113, 113, 0.1)',
+      removedColor: '#f87171',
+      wordAddedBackground: 'rgba(52, 211, 153, 0.25)',
+      wordRemovedBackground: 'rgba(248, 113, 113, 0.25)',
+      addedGutterBackground: 'rgba(52, 211, 153, 0.08)',
+      removedGutterBackground: 'rgba(248, 113, 113, 0.08)',
+      gutterBackground: '#0d0d12',
+      gutterBackgroundDark: '#0a0a0f',
+      highlightBackground: 'rgba(124, 58, 237, 0.1)',
+      highlightGutterBackground: 'rgba(124, 58, 237, 0.15)',
+      codeFoldGutterBackground: '#16161e',
+      codeFoldBackground: '#16161e',
+      emptyLineBackground: '#0d0d12',
+    }
+  },
+  line: { padding: '4px 0', fontSize: '13px' },
+  gutter: { padding: '0 15px', minWidth: '60px' },
+  contentText: { fontFamily: "'JetBrains Mono', 'Fira Code', monospace", fontSize: '13px' }
+};
 
 function ScoreCircle({ title, score, icon }: { title: string, score: number, icon: React.ReactNode }) {
   const color = score > 89 ? "var(--success)" : score > 49 ? "var(--average)" : "var(--fail)";
@@ -329,13 +680,87 @@ function MetricCard({ title, value, type }: { title: string, value: string, type
   return (<div className={styles.metricCard}><div className={styles.metricHeader}><span className={styles.metricTitle}>{title}</span>{icon}</div><div className={styles.metricValue}>{value}</div></div>);
 }
 
-function SuggestionItem({ title, savings, impact, desc, canFix, onFix }: { title: string, savings: string, impact: string, desc: string, canFix: boolean, onFix: () => void }) {
-  const [expanded, setExpanded] = useState(false); const [fixing, setFixing] = useState(false);
-  const handleFixClick = async (e: React.MouseEvent) => { e.stopPropagation(); setFixing(true); try { await onFix(); } catch (e) { } finally { setFixing(false); } };
+function SuggestionItem({ title, savings, impact, desc, oppId, canFix, onFix, aiFix, onApplyAiFix }: {
+  title: string,
+  savings: string,
+  impact: string,
+  desc: string,
+  oppId: string,
+  canFix: boolean,
+  onFix: () => void,
+  aiFix?: any,
+  onApplyAiFix?: (fix: any) => void
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [fixing, setFixing] = useState(false);
+
+  const handleFixClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFixing(true);
+    try { await onFix(); } catch (e) { } finally { setFixing(false); }
+  };
+
   return (
-    <div className={styles.suggestionItem} onClick={() => setExpanded(!expanded)}>
-      <div className={styles.suggestionHeaderInner}><div className={styles.suggestionMain}><div className={styles.suggestionInfo}><div className={styles.titleRow}>{expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}<h4>{title}</h4></div><span className={impact === "High" ? styles.highImpact : impact === "Diagnostic" ? styles.diagImpact : styles.medImpact}>{impact}</span></div><div className={styles.fixActionArea}><div className={styles.suggestionSavings}>{savings}</div>{canFix && (<button className={styles.miniFixBtn} disabled={fixing} onClick={handleFixClick}>{fixing ? <Loader2 className={styles.spin} size={14} /> : <>Unit Analysis <ArrowRight size={14} /></>}</button>)}</div></div></div>
-      {expanded && (<div className={styles.suggestionDesc} onClick={(e) => e.stopPropagation()}><p dangerouslySetInnerHTML={{ __html: desc.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>') }} /></div>)}
+    <div className={`${styles.suggestionItem} ${expanded ? styles.expandedSug : ""}`} onClick={() => setExpanded(!expanded)}>
+      <div className={styles.suggestionHeaderInner}>
+        <div className={styles.suggestionMain}>
+          <div className={styles.suggestionInfo}>
+            <div className={styles.titleRow}>
+              {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              <h4>{title}</h4>
+            </div>
+            <span className={impact === "High" ? styles.highImpact : impact === "Diagnostic" ? styles.diagImpact : styles.medImpact}>
+              {impact}
+            </span>
+          </div>
+          <div className={styles.fixActionArea}>
+            <div className={styles.suggestionSavings}>{savings}</div>
+            <div className={styles.statusIndicator}>
+              {aiFix ? <Sparkle size={14} color="var(--primary)" /> : <Zap size={14} color="var(--text-muted)" />}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className={styles.suggestionDesc} onClick={(e) => e.stopPropagation()}>
+          <p dangerouslySetInnerHTML={{ __html: desc.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>') }} />
+
+          <div className={styles.solutionBox}>
+            <div className={styles.solutionHeader}>
+              <Cpu size={16} color="var(--primary)" />
+              <strong>Antigravity Surgical Strategy</strong>
+            </div>
+
+            {aiFix ? (
+              <div className={styles.aiResultCard}>
+                <div className={styles.aiResultBody}>
+                  <div className={styles.aiResultTitleRow}>
+                    <div className={styles.aiFixBadge}>{aiFix.category?.toUpperCase() || "CORE"}</div>
+                    <h5>{aiFix.title}</h5>
+                    {aiFix.isBreaking && <span className={styles.breakingBadgeSmall}>BREAKING</span>}
+                    <div className={`${styles.riskBadgeSmall} ${styles['risk' + aiFix.riskLevel]}`}>Risk: {aiFix.riskLevel}</div>
+                  </div>
+                  <p>{aiFix.explanation}</p>
+                  <code className={styles.fixPathMini}><FileCode size={10} /> {aiFix.filePath}</code>
+                </div>
+                <button className={styles.reviewBtnInline} onClick={() => onApplyAiFix?.(aiFix)}>
+                  Review & Apply Fix <ArrowRight size={14} />
+                </button>
+              </div>
+            ) : (
+              <div className={styles.noAiFixState}>
+                <p>No automated strategy available yet for this specific audit.</p>
+                {canFix && (
+                  <button className={styles.generateBtnInline} disabled={fixing} onClick={handleFixClick}>
+                    {fixing ? <Loader2 className={styles.spin} size={14} /> : "Generate Targeted Fix"}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

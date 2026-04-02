@@ -8,3 +8,24 @@ dist/
 coverage/
 .shopify-theme-cache/
 ella-bella/
+theme/
+.git/
+
+# Temporary files and reports
+lighthouse-report-*.json
+lighthouse-report-*.html
+*.txt
+*.sh
+*.py
+*.js
+!next-frontend/src/**/*.js
+!next-frontend/**/*.tsx
+!next-frontend/**/*.ts
+data/
+generated-fixes.json
+audit-result.json
+test_bedrock.js
+test_bedrock_v2.js
+next-frontend/test_bedrock.js
+next-frontend/*.html
+next-frontend/*.report.html
