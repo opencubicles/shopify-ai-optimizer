@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
         // LOAD STRATEGY MANIFEST (generated-fixes.json)
         let availableFixes = [];
         try {
-            const manifestPath = "/var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json";
+            const manifestPath = path.join(process.cwd(), "..", "data", "generated-fixes.json");
             if (fs.existsSync(manifestPath)) {
                 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
                 availableFixes = manifest.fixes || [];
@@ -196,20 +196,32 @@ export async function POST(req: NextRequest) {
                         const badgeTrigger = e.target.closest('.ai-badge-injector');
                         const rowTrigger = e.target.closest('.ai-row-action');
                         
+                        function sendSignal(data) {
+                            console.log('[IFRAME/SHADOW] Dispatching Signal:', data);
+                            // Support both Iframe (window.parent) and Shadow DOM (bubbles)
+                            const signal = new CustomEvent('lighthouse-signal', { 
+                                detail: data,
+                                bubbles: true, 
+                                composed: true 
+                            });
+                            document.dispatchEvent(signal);
+                            if (window.parent !== window) {
+                                window.parent.postMessage(data, '*');
+                            }
+                        }
+
                         if (badgeTrigger) {
                             e.preventDefault();
                             e.stopPropagation();
-                            console.log('[IFRAME] AI Badge Delegation Click -> Sending NAVIGATE_TO_FIXES');
-                            window.parent.postMessage({ type: 'NAVIGATE_TO_FIXES' }, '*');
+                            sendSignal({ type: 'NAVIGATE_TO_FIXES' });
                         } else if (rowTrigger) {
                             e.preventDefault();
                             e.stopPropagation();
                             const fixId = rowTrigger.dataset.fixId;
                             const url = rowTrigger.dataset.url;
-                            console.log('[IFRAME] AI Row Delegation Click -> Sending OPEN_FIX:', fixId);
-                            window.parent.postMessage({ type: 'OPEN_FIX', fixId: fixId, url: url }, '*');
+                            sendSignal({ type: 'OPEN_FIX', fixId: fixId, url: url });
                         }
-                    }, true); // Use capture phase to ensure we beat Lighthouse listeners if needed
+                    }, true); // Use capture phase
 
                     // Initial Run
                     if (document.readyState === 'complete') injectAI();

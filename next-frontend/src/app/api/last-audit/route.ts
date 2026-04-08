@@ -4,7 +4,7 @@ import path from 'path';
 
 export async function GET() {
     try {
-        const dataPath = "/var/www/html/shopify-new/shopify-ai-optimizer/data/audit-result.json";
+        const dataPath = path.join(process.cwd(), "..", "data", "audit-result.json");
         if (!fs.existsSync(dataPath)) {
             return NextResponse.json({ error: 'No saved audit found' }, { status: 404 });
         }
@@ -15,7 +15,7 @@ export async function GET() {
         // LOAD STRATEGY MANIFEST (generated-fixes.json)
         let availableFixes = [];
         try {
-            const manifestPath = "/var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json";
+            const manifestPath = path.join(process.cwd(), "..", "data", "generated-fixes.json");
             if (fs.existsSync(manifestPath)) {
                 const manifestRaw = fs.readFileSync(manifestPath, "utf-8");
                 const manifest = JSON.parse(manifestRaw);
@@ -185,18 +185,29 @@ export async function GET() {
                         const badgeTrigger = e.target.closest('.ai-badge-injector');
                         const rowTrigger = e.target.closest('.ai-row-action');
                         
+                        function sendSignal(data) {
+                            console.log('[IFRAME/SHADOW] Dispatching Signal:', data);
+                            const signal = new CustomEvent('lighthouse-signal', { 
+                                detail: data,
+                                bubbles: true, 
+                                composed: true 
+                            });
+                            document.dispatchEvent(signal);
+                            if (window.parent !== window) {
+                                window.parent.postMessage(data, '*');
+                            }
+                        }
+
                         if (badgeTrigger) {
                             e.preventDefault();
                             e.stopPropagation();
-                            console.log('[IFRAME] AI Badge Delegation Click -> Sending NAVIGATE_TO_FIXES');
-                            window.parent.postMessage({ type: 'NAVIGATE_TO_FIXES' }, '*');
+                            sendSignal({ type: 'NAVIGATE_TO_FIXES' });
                         } else if (rowTrigger) {
                             e.preventDefault();
                             e.stopPropagation();
                             const fixId = rowTrigger.dataset.fixId;
                             const url = rowTrigger.dataset.url;
-                            console.log('[IFRAME] AI Row Delegation Click -> Sending OPEN_FIX:', fixId);
-                            window.parent.postMessage({ type: 'OPEN_FIX', fixId: fixId, url: url }, '*');
+                            sendSignal({ type: 'OPEN_FIX', fixId: fixId, url: url });
                         }
                     }, true); // Use capture phase
 
