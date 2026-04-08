@@ -1,9 +1,6 @@
 <!doctype html>
 <html class="js" lang="{{ request.locale.iso_code }}">
   <head>
-    <link rel="preload" href="{{ 'shopify://shop_images/1920x600_3.jpg' | asset_url }}" as="image">
-    <link rel="preload" href="{{ 'shopify://shop_images/860_960_47342e1e-d508-4ae4-ba66-56e3530356db.jpg' | asset_url }}" as="image">
-
     
     <script>
       /* start spd config */ window._spt_delay_keywords = [
@@ -63,8 +60,12 @@
     <!-- Gokwik theme code start -->
 
     <link rel="dns-prefetch" href="https://pdp.gokwik.co/">
-    <link rel="dns-prefetch" href="https://api.gokwik.co">
-    {% render 'gokwik' %}
+     {% if template contains 'product' or template contains 'cart' %}
+      <link rel="dns-prefetch" href="https://api.gokwik.co">
+      <link rel="dns-prefetch" href="https://pdp.gokwik.co/">
+      
+      {% render 'gokwik' %}
+    {% endif %}
     <!-- Gokwik theme code End -->
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
@@ -90,11 +91,14 @@
     {% if template contains 'product' %}
       <link
         rel="preload"
-        href="{{ product.media.first | image_url:width:500 }}"
+        href="{{ product.media.first | image_url:width:800 }}"
         as="image"
-        loading="eager"
+        imagesrcset="{{ product.media.first | image_url:width:400 }} 400w, {{ product.media.first | image_url:width:800 }} 800w, {{ product.media.first | image_url:width:1200 }} 1200w"
+        imagesizes="(max-width: 750px) 100vw, 50vw"
         fetchpriority="high"
       >
+      <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
       <link
         rel="preload"
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
@@ -132,10 +136,10 @@
       
       {{ 'swiper-bundle.min.css' | asset_url | preload_tag: as: 'style' }}
       
-      
+      {%- comment -%}
       {{ 'wizzyCustom.css' | asset_url | preload_tag: as: 'style' }}
 
-      
+      {%- endcomment -%}
     
 
       <link
@@ -144,8 +148,8 @@
         as="style"
       >
 
-      <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
-<noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css"></noscript>
+      <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" as="style">
+
       <link
         rel="preload"
         href="https://cdn.shopify.com/extensions/ec9e7230-7fc7-4e5c-84a3-54f72c7bef6d/wizzy-search-filters-52/assets/wizzyCustom.css"
@@ -172,6 +176,11 @@
     %}
       <meta name="robots" content="noindex, nofollow">
       <meta name="googlebot" content="noindex, nofollow">
+    {% endif %}
+
+    <!-- Blog category/tag pages noindex -->
+    {% if current_tags and request.path contains '/blogs/' %}
+      <meta name="robots" content="noindex, follow">
     {% endif %}
     <!-- code for no follow no index ends -->
 
@@ -202,7 +211,12 @@
 
     <script src="{{ 'jquery.min.js' | asset_url }}" defer="defer"></script>
 
- 
+    <!-- swiper CDN link -->
+    {% comment %} {% if template contains 'index' or template contains 'product' or template contains 'page' %}
+      <script src="{{ 'swiper-bundle.min.js' | asset_url }}" defer="defer"></script>
+    {% endif %} {% endcomment %}
+    <script src="{{ 'swiper-bundle.min.js' | asset_url }}" defer="defer"></script>
+    <!-- swiper CDN end -->
    
     <script src="//code.jquery.com/ui/1.13.2/jquery-ui.min.js" defer="defer"></script>
   
@@ -458,6 +472,16 @@
         }
       }
     {% endstyle %}
+    <style>
+      /* Critical CSS for header */
+      .header-wrapper { display: block; position: relative; z-index: 10; }
+      .header { padding: 1rem 2rem; background: #fff; border-bottom: 1px solid #e5e5e5; }
+      .announcement-bar { background: #000; color: #fff; text-align: center; padding: 0.8rem; font-size: 1.4rem; }
+      /* Critical CSS for hero/product */
+      .product-media-container { width: 100%; max-width: 600px; margin: 0 auto; }
+      .product-media-container img { width: 100%; height: auto; display: block; }
+      .page-width { max-width: 1200px; margin: 0 auto; padding: 0 2rem; }
+    </style>
 
     {{ 'base.css' | asset_url | stylesheet_tag: preload: true }}
     {{ 'custom.css' | asset_url | stylesheet_tag: preload: true }}
@@ -496,7 +520,23 @@
     </script>
 
     <!-- Google tag (gtag.js) -->
+     {%- if template == 'index' -%}
+      <script>
+      function cwLoadAnalytics() {
+          const s = document.createElement('script');
+          s.src = 'https://www.googletagmanager.com/gtag/js?id=G-WKDFZ6DS9L';
+          s.async = true;
+          document.head.appendChild(s);
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date()); gtag('config', 'G-WKDFZ6DS9L');
+      }
+      window.addEventListener('scroll', cwLoadAnalytics, {once: true, passive: true});
+      </script>
+    {%- else -%}
+
     <script async data-src="https://www.googletagmanager.com/gtag/js?id=G-WKDFZ6DS9L"></script>
+    {%- endif -%}
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag() {
@@ -539,16 +579,29 @@
     <!-- End Google Tag Manager -->
 
     <!-- Start VWO Async SmartCode -->
-    
-    <script type="text/javascript" id="vwoCode">
+
+     <script type="text/javascript" id="vwoCode">
       window._vwo_code ||
+      ['touchstart', 'mousemove', 'scroll'].forEach(event => {
         (function () {
+        window.addEventListener(event, function loadVWO() {
           var account_id = 975543,
+          ['touchstart', 'mousemove', 'scroll'].forEach(e => window.removeEventListener(e, loadVWO));
             version = 2.1,
+          
             settings_tolerance = 2000,
+          window._vwo_code ||
             hide_element = 'body',
+            (function () {
             hide_element_style =
+              var account_id = 975543,
               'opacity:0 !important;filter:alpha(opacity=0) !important;background:none !important;transition:none !important;',
+                version = 2.1,
+                settings_tolerance = 2000,
+                hide_element = 'body',
+                hide_element_style =
+                  'opacity:0 !important;filter:alpha(opacity=0) !important;background:none !important;transition:none !important;',
+    
             /* DO NOT EDIT BELOW THIS LINE */
             f = false,
             w = window,
@@ -707,7 +760,15 @@
     </script>
     <!-- End VWO Async SmartCode -->
 
-  
+    <!--
+      <script type="text/javascript">
+          (function(c,l,a,r,i,t,y){
+              c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+              t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+              y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+          })(window, document, "clarity", "script", "oxcau28h0h");
+      </script>
+    -->
 
     {% section 'custom-schema-markup' %}
 
@@ -951,10 +1012,42 @@
         ecomm_totalvalue: window.google_tag_params.ecomm_totalvalue,
       });
     </script>
-    
+    <!--
+      <script>
+      window.dataLayer = window.dataLayer || [];
+
+      dataLayer.push({"event":"view_item",
+        currency: "USD",
+        value: 30.03,
+        items: [
+          {
+            item_id: "SKU_12345",
+            item_name: "Stan and Friends Tee",
+            affiliation: "Google Merchandise Store",
+            coupon: "SUMMER_FUN",
+            discount: 2.22,
+            index: 0,
+            item_brand: "Google",
+            item_category: "Apparel",
+            item_category2: "Adult",
+            item_category3: "Shirts",
+            item_category4: "Crew",
+            item_category5: "Short sleeve",
+            item_list_id: "related_products",
+            item_list_name: "Related Products",
+            item_variant: "green",
+            location_id: "ChIJIQBpAG2ahYAR_6128GcTUEo",
+            price: 10.01,
+            quantity: 3
+          }
+        ]
+      });
+
+      </script>
+    -->
     <div id="sy-whatshelp">
       <a
-        href="https://api.whatsapp.com/send?phone=919319198124&text=Hi"
+        href="https://api.whatsapp.com/send?phone=919311434426&text=Hi"
         target="_blank"
         class="sywh-open-services "
         data-html="true"

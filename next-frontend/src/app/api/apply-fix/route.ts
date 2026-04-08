@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
 
         let fixData: any = null;
         let identifiedFile = filePath || "";
+        if (identifiedFile.startsWith('theme/')) identifiedFile = identifiedFile.replace('theme/', '');
 
         if (originalSnippet && fixedSnippet && identifiedFile) {
             // USE PRE-GENERATED FIX (from Global Analysis or previous Preview)
@@ -63,6 +64,10 @@ export async function POST(req: NextRequest) {
             }
 
             const themePath = process.env.THEME_PATH || path.join(process.cwd(), "..", "theme");
+            // Robust path handling: strip leading 'theme/' if present
+            if (identifiedFile.startsWith('theme/')) {
+                identifiedFile = identifiedFile.replace('theme/', '');
+            }
             const fullPath = path.join(themePath, identifiedFile);
             if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) identifiedFile = "layout/theme.liquid";
 

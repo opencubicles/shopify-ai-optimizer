@@ -1,43 +1,31 @@
-import { NextRequest, NextResponse } from "next/server";
-// @ts-ignore - Lighthouse report generator is sometimes tricky with types in Next.js
-import { ReportGenerator } from "lighthouse/report/generator/report-generator.js";
-import fs from "fs";
-import path from "path";
+import { NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 
-export async function POST(req: NextRequest) {
+export async function GET() {
     try {
-        const { url, device = "mobile" } = await req.json();
-
-        if (!url) return NextResponse.json({ error: "URL is required" }, { status: 400 });
-
-        const apiKey = process.env.PAGESPEED_KEY || process.env.GOOGLE_API_KEY;
-        if (!apiKey) return NextResponse.json({ error: "PAGESPEED_KEY is missing in .env" }, { status: 500 });
-
-        console.log(`Analyzing via PageSpeed API: ${url} (${device})`);
-
-        // Categories to include
-        const categories = "category=performance&category=accessibility&category=best-practices&category=seo&category=pwa";
-        const psiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&key=${apiKey}&strategy=${device.toUpperCase()}&${categories}`;
-
-        const response = await fetch(psiUrl);
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error?.message || "PageSpeed API failed");
+        const dataPath = "/var/www/html/shopify-new/shopify-ai-optimizer/data/audit-result.json";
+        if (!fs.existsSync(dataPath)) {
+            return NextResponse.json({ error: 'No saved audit found' }, { status: 404 });
         }
 
-        const reportJson = data.lighthouseResult;
+        const dataStr = fs.readFileSync(dataPath, 'utf8');
+        const data = JSON.parse(dataStr);
 
         // LOAD STRATEGY MANIFEST (generated-fixes.json)
         let availableFixes = [];
         try {
             const manifestPath = "/var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json";
             if (fs.existsSync(manifestPath)) {
-                const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+                const manifestRaw = fs.readFileSync(manifestPath, "utf-8");
+                const manifest = JSON.parse(manifestRaw);
                 availableFixes = manifest.fixes || [];
+                console.log(`[last-audit] Loaded ${availableFixes.length} fixes from manifest.`);
+            } else {
+                console.error("[last-audit] Manifest file NOT FOUND at", manifestPath);
             }
-        } catch (err) {
-            console.error("Failed to load strategy manifest for injection:", err);
+        } catch (err: any) {
+            console.error("[last-audit] Failed to load manifest:", err.message);
         }
 
         // AUTO-INJECT A TEST FIX FOR DEBUGGING
@@ -48,12 +36,13 @@ export async function POST(req: NextRequest) {
             fixedSnippet: "// MANUAL TEST"
         });
 
-        // Generate the HTML report
-        let htmlReport = "";
-        try {
-            htmlReport = ReportGenerator.generateReport(reportJson, 'html') as string;
+        // Inject AI features if HTML report exists
+        if (data.html) {
+            // CLEANUP PREVIOUS INJECTIONS TO PREVENT DUPES
+            let htmlReport = data.html;
+            htmlReport = htmlReport.replace(/<style class="ai-styles">[\s\S]*?<\/style>/g, "");
+            htmlReport = htmlReport.replace(/<script class="ai-script">[\s\S]*?<\/script>/g, "");
 
-            // AGGRESSIVE AI INJECTION
             const customStyles = `
                 <style class="ai-styles">
                     .ai-badge-injector {
@@ -209,7 +198,7 @@ export async function POST(req: NextRequest) {
                             console.log('[IFRAME] AI Row Delegation Click -> Sending OPEN_FIX:', fixId);
                             window.parent.postMessage({ type: 'OPEN_FIX', fixId: fixId, url: url }, '*');
                         }
-                    }, true); // Use capture phase to ensure we beat Lighthouse listeners if needed
+                    }, true); // Use capture phase
 
                     // Initial Run
                     if (document.readyState === 'complete') injectAI();
@@ -225,21 +214,11 @@ export async function POST(req: NextRequest) {
                 </script>
             `;
 
-            htmlReport = htmlReport.replace('</head>', customStyles + injectionScript + '</head>');
-        } catch (e) {
-            console.error("Failed to generate HTML report:", e);
+            data.html = htmlReport.replace('</head>', customStyles + injectionScript + '</head>');
         }
 
-        return NextResponse.json({
-            ...data,
-            html: htmlReport
-        });
-
-    } catch (error: any) {
-        console.error("Analysis error:", error);
-        return NextResponse.json(
-            { error: "PageSpeed Analysis failed", detail: error.message },
-            { status: 500 }
-        );
+        return NextResponse.json(data);
+    } catch (err: any) {
+        return NextResponse.json({ error: err.message }, { status: 500 });
     }
 }

@@ -53,9 +53,32 @@ import {
 } from "lucide-react";
 import styles from "./page.module.css";
 
-interface Opportunity { id: string; title: string; description: string; score: number; displayValue: string; savings: number; details: any; }
-interface Diagnostic { id: string; title: string; description: string; displayValue: string; }
-interface AnalysisResult { html: string; scores: { performance: number; accessibility: number; bestPractices: number; seo: number; }; metrics: { fcp: string; lcp: string; tbt: string; cls: string; si: string; tti: string; }; opportunities: Opportunity[]; diagnostics: Diagnostic[]; url: string; device: string; fetchTime: string; }
+interface Opportunity { id: string; title: string; description: string; score: number; displayValue: string; savings: number; details: any; warnings?: string[]; }
+interface Diagnostic { id: string; title: string; description: string; displayValue: string; score?: number | null; details?: any; warnings?: string[]; }
+interface FieldMetric {
+  label: string;
+  value: string;
+  status: string;
+  distributions: { min: number; max?: number; proportion: number; color: string; }[];
+}
+interface FilmstripItem { data: string; timing: number; }
+interface AnalysisResult {
+  html: string;
+  scores: { performance: number; accessibility: number; bestPractices: number; seo: number; pwa?: number; };
+  metrics: { fcp: string; lcp: string; tbt: string; cls: string; si: string; tti: string; };
+  opportunities: Opportunity[];
+  diagnostics: Diagnostic[];
+  passedCount: number;
+  filmstrip: FilmstripItem[];
+  url: string;
+  device: string;
+  fetchTime: string;
+  fieldData?: {
+    metrics: FieldMetric[];
+    passed: boolean;
+    hasData: boolean;
+  };
+}
 
 export default function AutoDeployDashboard() {
   const [url, setUrl] = useState("");
@@ -67,10 +90,12 @@ export default function AutoDeployDashboard() {
   const [globalFixes, setGlobalFixes] = useState<{ executiveSummary: string, fixes: any[] } | null>(null);
   const [globalLoading, setGlobalLoading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
-
   const [fixesIdentified, setFixesIdentified] = useState(false);
   const [fixLog, setFixLog] = useState<any[]>([]);
   const [countdown, setCountdown] = useState(0);
+
+  // Tabs: dashboard | lighthouse
+  const [activeTab, setActiveTab] = useState<"dashboard" | "lighthouse">("lighthouse");
 
   // Auto-Deploy Switch
   const [autoDeploy, setAutoDeploy] = useState(true);
@@ -101,666 +126,332 @@ export default function AutoDeployDashboard() {
     return () => clearInterval(timer);
   }, [loading, unitReviewLoading, pushLoading]);
 
-  const handleAnalyze = async (e?: React.FormEvent) => {
-    e?.preventDefault(); if (!url) return;
-    setLoading(true); setError(null); setResult(null); setFixesIdentified(false);
-    setActiveSteps(["Connecting to Lighthouse CLI...", "Auditing Performance Metrics...", "Extrating Diagnostics..."]);
-    setCurrentAction("Full Audit Execution");
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (typeof data !== 'object' || data === null) return;
+
+      console.log(`[DASHBOARD] Signal: ${data.type}`);
+
+      if (data.type === 'OPEN_FIX') {
+        const { fixId, url } = data;
+        const fixes = globalFixes?.fixes || [];
+        let fix = fixes.find((f: any) => f.id === fixId);
+        if (!fix && url) {
+          fix = fixes.find((f: any) => (f.targetAsset || "").toLowerCase().includes(url.toLowerCase()));
+        }
+        if (fix) {
+          setUnitData({
+            id: fix.id,
+            fileChanged: fix.filePath,
+            impact: fix.impact + " strategy applied to " + fix.targetAsset,
+            originalSnippet: fix.originalSnippet,
+            fixedSnippet: fix.fixedSnippet,
+            riskLevel: fix.riskLevel,
+            isBreaking: fix.isBreaking,
+            source: 'ai'
+          });
+          setShowUnitReview(true);
+        }
+      } else if (data.type === 'NAVIGATE_TO_FIXES' || data.type === 'SWITCH_TAB') {
+        console.log('[DASHBOARD] Triggering automated tab transition...');
+        setTimeout(() => {
+          setActiveTab('dashboard');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }, 10);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [globalFixes]);
+
+  const handleAnalyze = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!url) return;
+    setLoading(true);
+    setResult(null);
+    setGlobalFixes(null);
+    setGlobalError(null);
+    setFixesIdentified(false);
+    setActiveSteps(["Initializing Antigravity probe...", "Waking up performance agents..."]);
+
     try {
-      const response = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, device }) });
-      if (!response.ok) throw new Error("Analysis failed");
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, device }),
+      });
       const data = await response.json();
-      setResult(data);
+      if (!response.ok) throw new Error(data.error || "Analysis failed");
+
+      const mapped = mapLighthouseResult(data, url, device);
+      setResult(mapped);
       setFixesIdentified(true);
-
-      // Save audit to disk for AI-assisted fix generation
-      await fetch("/api/save-audit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-
-      // Try to load any pre-generated fixes
       handleLoadFixes();
-    } catch (err: any) { setError(err.message); } finally { setLoading(false); setActiveSteps([]); setCurrentAction(null); }
+    } catch (err: any) {
+      setError(err.message);
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLoadFixes = async () => {
     setGlobalLoading(true);
-    setGlobalError(null);
     try {
       const res = await fetch("/api/load-fixes");
       const data = await res.json();
-      if (!res.ok) {
-        // Not ready yet — show a friendly pending state
-        setGlobalError("__PENDING__");
-        return;
-      }
+      if (!res.ok) throw new Error(data.error);
       setGlobalFixes(data);
-    } catch (e: any) {
+    } catch (err: any) {
       setGlobalError("__PENDING__");
     } finally {
       setGlobalLoading(false);
     }
   };
 
-  const handleIdentityUnitFix = async (issue: any) => {
-    if (!result) return;
-    setUnitReviewLoading(true);
+  const handleApplyGlobalFix = (fix: any) => {
+    setUnitData({
+      id: fix.id,
+      fileChanged: fix.filePath,
+      impact: fix.impact + " strategy applied to " + (fix.targetAsset || "Main-Thread"),
+      originalSnippet: fix.originalSnippet,
+      fixedSnippet: fix.fixedSnippet,
+      riskLevel: fix.riskLevel,
+      isBreaking: fix.isBreaking,
+      source: 'ai'
+    });
     setShowUnitReview(true);
-    setUnitData(null);
-    setIsEditing(false);
-    setActiveSteps(["Scanning theme directory...", "Mapping PageSpeed URLs to theme files...", "Architecting surgical fix..."]);
-    setCurrentAction("AI Analysis");
-    try {
-      const response = await fetch("/api/apply-fix", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: result.url, issueId: issue.id, title: issue.title, details: issue.details, device: result.device, previewOnly: true
-        })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to identify unit fix");
-      setUnitData({
-        ...data,
-        issue,
-        riskLevel: data.riskLevel,
-        isBreaking: data.isBreaking
-      });
-      setActiveSteps(data.steps || []);
-    } catch (err: any) {
-      alert(`Error: ${err.message}`);
-      setShowUnitReview(false);
-    } finally {
-      setUnitReviewLoading(false);
-    }
   };
 
   const handleApplyUnitFix = async () => {
     if (!unitData) return;
-    setUnitReviewLoading(true);
-    setActiveSteps(["Verification of code snippet uniqueness...", "Applying atomic patch to local file...", "Updating session logs..."]);
-
+    setPushLoading(unitData.id);
+    setActiveSteps(["Syncing patch to Shopify network...", "Bypassing content cache..."]);
     try {
       const response = await fetch("/api/apply-fix", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: result?.url,
-          issueId: unitData.details?.issueId,
-          title: unitData.title,
-          details: unitData.details,
-          device,
-          previewOnly: false,
+          fixId: unitData.id,
           originalSnippet: unitData.originalSnippet,
           fixedSnippet: unitData.fixedSnippet,
           filePath: unitData.fileChanged
         })
       });
       const data = await response.json();
-
-      if (response.ok && !data.success) {
-        alert(`❌ Surgical Patch Failed: ${data.error || "The original code snippet could not be found in the file."}`);
-        return;
-      }
-
-      if (!response.ok) throw new Error(data.detail || "Failed to apply fix");
-
-      setFixLog(prev => [data, ...prev]);
-
-      // AUTO DEPLOY LOGIC 🚀
-      if (autoDeploy) {
-        setActiveSteps([...(data.steps || []), "Auto-Deploying to Shopify Theme..."]);
-        setCurrentAction("Live Deployment");
-        const pushRes = await fetch("/api/theme-push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filePath: data.fileChanged }) });
-
-        if (!pushRes.ok) {
-          const pushData = await pushRes.json();
-          throw new Error(pushData.detail || "Auto-Deploy failed");
-        }
-
-        const pushData = await pushRes.json();
-        setActiveSteps(pushData.steps || []);
-        alert(`✅ Optimization Applied & Deployed to Shopify!`);
-      } else {
-        alert(`✅ Optimization Applied to Disk. Manually push when ready.`);
-      }
-
+      if (!response.ok) throw new Error(data.error);
+      alert("✅ Fix Applied Successfully!");
       setShowUnitReview(false);
-    } catch (err: any) { alert(`Error: ${err.message}`); } finally { setUnitReviewLoading(false); setActiveSteps([]); setCurrentAction(null); }
-  };
-
-  const handlePushToShopify = async (filePath?: string) => {
-    if (!window.confirm(filePath ? `Push ${filePath} to Theme?` : "Confirm entire theme sync?")) return;
-    setPushLoading(filePath || "all");
-    setActiveSteps(["Staging local improvements (git add)...", "Securing version history (git commit)...", "Syncing to Shopify Theme ID..."]);
-    setCurrentAction("Shopify Deployment");
-    try {
-      const response = await fetch("/api/theme-push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filePath }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Push failed");
-      setActiveSteps(data.steps || []);
-      alert(`✅ Shopify Sync Success: ${data.message}`);
-    } catch (err: any) { alert(`❌ Push Error: ${err.message}`); } finally { setPushLoading(null); setActiveSteps([]); setCurrentAction(null); }
-  };
-
-  const handleApplyGlobalFix = async (fix: any) => {
-    setUnitReviewLoading(true);
-    setShowUnitReview(true);
-    setUnitData(null);
-    setIsEditing(false);
-    setActiveSteps(["Retrieving global suggestion context...", "Validating surgical patch..."]);
-    setCurrentAction("Global Fix Application");
-
-    try {
-      // We reuse the unit review modal for global fixes too
-      const normalizeSnippet = (s: string) => s ? s.replace(/\\n/g, '\n').replace(/\\t/g, '\t') : '';
-      setUnitData({
-        fileChanged: fix.filePath,
-        originalSnippet: normalizeSnippet(fix.originalSnippet),
-        fixedSnippet: normalizeSnippet(fix.fixedSnippet),
-        impact: fix.explanation,
-        details: { issueId: fix.id },
-        title: fix.title,
-        riskLevel: fix.riskLevel,
-        isBreaking: fix.isBreaking
-      });
-    } catch (err: any) {
-      alert(`Error: ${err.message}`);
-      setShowUnitReview(false);
+    } catch (e: any) {
+      alert("Failed: " + e.message);
     } finally {
-      setUnitReviewLoading(false);
+      setPushLoading(null);
+      setActiveSteps([]);
     }
   };
 
   const handleBatchApplyLowRisk = async () => {
-    if (!globalFixes || !globalFixes.fixes) return;
-    const lowRiskFixes = globalFixes.fixes.filter((f: any) => f.riskLevel === "Low");
-    if (lowRiskFixes.length === 0) {
-      alert("No low-risk optimizations identified for batch processing.");
-      return;
-    }
-    if (!window.confirm(`Initialize Precision Batch Decompression? This will apply all ${lowRiskFixes.length} Low-Risk fixes at once.`)) return;
-
-    setPushLoading("batch");
-    setCurrentAction("Batch Optimization");
-    setActiveSteps(["Initalizing Antigravity Batch Engine..."]);
-
-    try {
-      let successCount = 0;
-      for (let i = 0; i < lowRiskFixes.length; i++) {
-        const fix = lowRiskFixes[i];
-        setActiveSteps(prev => [...prev, `[${i + 1}/${lowRiskFixes.length}] Applying: ${fix.title}...`]);
-        const response = await fetch("/api/apply-fix", {
+    const lowRiskFixes = globalFixes?.fixes?.filter((f: any) => f.riskLevel === "Low") || [];
+    if (lowRiskFixes.length === 0) return;
+    setPushLoading('batch');
+    let successCount = 0;
+    for (const fix of lowRiskFixes) {
+      try {
+        await fetch("/api/apply-fix", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            url: result?.url,
-            issueId: fix.id,
-            title: fix.title,
-            details: { issueId: fix.id },
-            device,
-            previewOnly: false,
-            originalSnippet: fix.originalSnippet,
-            fixedSnippet: fix.fixedSnippet,
-            filePath: fix.filePath
-          })
+          body: JSON.stringify({ ...fix, fixId: fix.id })
         });
-        const data = await response.json();
-        if (response.ok && data.success) {
-          setFixLog(prev => [data, ...prev]);
-          successCount++;
-        }
-      }
-      setActiveSteps(prev => [...prev, `Batch sequence complete. ${successCount} optimizations applied.`]);
-      alert(`✅ Mission Success: Applied ${successCount} optimizations to local theme.`);
-      if (autoDeploy) {
-        handlePushToShopify();
-      }
-    } catch (e) {
-      alert("Batch execution interrupted. Check connection.");
+        successCount++;
+      } catch (e) { }
+    }
+    alert(`Applied ${successCount} low-risk optimizations.`);
+    setPushLoading(null);
+  };
+
+  const handleLoadLastAudit = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/last-audit');
+      const rawData = await res.json();
+      setResult(mapLighthouseResult(rawData, rawData.lighthouseResult?.requestedUrl || "", "mobile"));
+      handleLoadFixes();
+    } catch (err: any) {
+      alert("No cached audit found.");
     } finally {
-      setPushLoading(null);
-      setActiveSteps([]);
-      setCurrentAction(null);
+      setLoading(false);
     }
   };
 
-  const handleShowDiffViewer = async (filePath: string) => {
-    setDiffLoading(true); setShowDiff(true); setDiffData(null);
-    try {
-      const response = await fetch("/api/diff-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filePath }) });
-      const data = await response.json();
-      setDiffData({ old: data.oldCode, new: data.newCode, fileName: data.fileName, status: data.status });
-    } catch (e) { alert("Failed to load diff."); } finally { setDiffLoading(false); }
-  };
+  const mapLighthouseResult = (rawData: any, url: string, device: string): AnalysisResult => {
+    const reportJson = rawData.lighthouseResult || {};
+    const audits = reportJson.audits || {};
+    const categories = reportJson.categories || {};
 
-  const lowRiskFixes = globalFixes?.fixes?.filter((f: any) => f.riskLevel === "Low") || [];
-  const totalBatchSavings = lowRiskFixes.reduce((acc: number, f: any) => {
-    const val = parseInt(f.savings?.replace(/[^0-9]/g, '') || "0");
-    return acc + val;
-  }, 0);
+    const extractMetric = (id: string) => audits[id]?.displayValue || "--";
+
+    return {
+      html: rawData.html || rawData.htmlReport || "",
+      scores: {
+        performance: Math.round((categories.performance?.score || 0) * 100),
+        accessibility: Math.round((categories.accessibility?.score || 0) * 100),
+        bestPractices: Math.round((categories["best-practices"]?.score || 0) * 100),
+        seo: Math.round((categories.seo?.score || 0) * 100),
+      },
+      metrics: {
+        fcp: extractMetric("first-contentful-paint"),
+        lcp: extractMetric("largest-contentful-paint"),
+        tbt: extractMetric("total-blocking-time"),
+        cls: extractMetric("cumulative-layout-shift"),
+        si: extractMetric("speed-index"),
+        tti: extractMetric("interactive"),
+      },
+      passedCount: Object.values(audits).filter((a: any) => a && a.score === 1).length,
+      filmstrip: audits["screenshot-thumbnails"]?.details?.items?.map((item: any) => ({ data: item.data, timing: item.timing })) || [],
+      opportunities: Object.values(audits)
+        .filter((a: any) => a && a.details?.type === "opportunity" && a.score < 1)
+        .map((a: any) => ({ id: a.id, title: a.title, description: a.description, score: a.score, displayValue: a.displayValue, savings: a.details?.overallSavingsMs, details: a.details })),
+      diagnostics: Object.values(audits)
+        .filter((a: any) => a && a.score !== null && a.score < 1 && a.details?.type !== "opportunity")
+        .map((a: any) => ({ id: a.id, title: a.title, description: a.description, displayValue: a.displayValue, score: a.score, details: a.details })),
+      url: url || "",
+      device: device || "mobile",
+      fetchTime: reportJson.fetchTime || new Date().toISOString()
+    };
+  };
 
   return (
     <main className={styles.container}>
-      <div className={styles.subtleBg}></div>
-      <header className={styles.header}><div className={styles.logo}>CORE<span>WATCH</span> AUTO</div><div className={styles.headerRight}><div className={styles.headerLinks}><a href="#">Docs</a></div><button className={styles.loginBtn}>Sign In</button></div></header>
+      <header className={styles.header}><div className={styles.logo}>CORE<span>WATCH</span> AUTO</div></header>
 
       <section className={styles.searchSection}>
-        <div className={styles.heroText}><h1>Auto-Deploy <span>Optimizations.</span></h1><p>Confirm the code fix and watch it go live in seconds.</p></div>
         <div className={styles.inputContainer + " glass-card"}>
           <div className={styles.deviceSelector}><button className={device === "mobile" ? styles.active : ""} onClick={() => setDevice("mobile")}><Smartphone size={18} /> Mobile</button><button className={device === "desktop" ? styles.active : ""} onClick={() => setDevice("desktop")}><Laptop size={18} /> Desktop</button></div>
-          <form className={styles.searchForm} onSubmit={handleAnalyze}><div className={styles.urlInputWrapper}><SearchIcon className={styles.searchIcon} size={20} /><input type="text" placeholder="Landing Page URL (use ?preview_theme_id for best results)" value={url} onChange={(e) => setUrl(e.target.value)} autoFocus /></div><button type="submit" disabled={loading} className={styles.analyzeBtn}>{loading ? <RefreshCw className={styles.spin} /> : "Analyze"}</button></form>
+          <form className={styles.searchForm} onSubmit={handleAnalyze}>
+            <input type="text" placeholder="Landing Page URL" value={url} onChange={(e) => setUrl(e.target.value)} />
+            <button type="submit" disabled={loading} className={styles.analyzeBtn}>{loading ? "Analyzing..." : "Analyze"}</button>
+            <button type="button" onClick={handleLoadLastAudit} disabled={loading} className={styles.fullReportBtn}><History size={16} /> Load Last</button>
+          </form>
         </div>
       </section>
 
-      {(loading || pushLoading) && (
-        <section className={styles.loadingContainer + " animate-fade-in"}>
-          <div className={styles.pulseContainer}><div className={styles.pulseCircle}></div><div className={styles.pulseCircle}></div><div className={styles.pulseCircle}></div></div>
-          <div className={styles.statusBox + " glass-card"}>
-            <div className={styles.statusHeader}><Terminal size={18} /> <span>{currentAction || "System Execution"} - {countdown}s</span></div>
-            <div className={styles.stepsList}>
-              {activeSteps.map((step, i) => (
-                <div key={i} className={styles.stepItem}><CheckCircle2 size={14} color={i === activeSteps.length - 1 ? "var(--primary)" : "var(--success)"} /> {step}</div>
-              ))}
-              {loading || pushLoading ? <div className={styles.stepItem}><Loader2 className={styles.spin} size={14} /> Finalizing Shopify handshake...</div> : null}
-            </div>
-          </div>
-          <div className={styles.loadingTrack}><div className={styles.loadingProgress}></div></div>
-        </section>
-      )}
-
-      {result && !loading && !pushLoading && (
-        <section className={styles.resultContainer + " animate-slide-up"}>
+      {result && (
+        <section className={styles.resultContainer}>
           <div className={styles.resultHeader}>
-            <div className={styles.resultInfo}><h2><a href={result.url} target="_blank" rel="noreferrer">{result.url}</a></h2><span>{new Date(result.fetchTime).toLocaleString()} | {result.device.toUpperCase()}</span></div>
-            <div className={styles.resultActions}>{result.html && <button className={styles.fullReportBtn} onClick={() => setShowFullReport(true)}>Report <ExternalLink size={16} /></button>}</div>
+            <div className={styles.tabSwitcher}>
+              <button className={activeTab === 'dashboard' ? styles.activeTab : ""} onClick={() => setActiveTab('dashboard')}><Zap size={16} /> AI Suggestions</button>
+              <button className={activeTab === 'lighthouse' ? styles.activeTab : ""} onClick={() => setActiveTab('lighthouse')}><Eye size={16} /> Full Report</button>
+            </div>
           </div>
 
-          <div className={styles.gridScores}>
-            <ScoreCircle title="Performance" score={result.scores.performance} icon={<Zap size={14} />} /><ScoreCircle title="Accessibility" score={result.scores.accessibility} icon={<UserCheck size={14} />} /><ScoreCircle title="Best Practices" score={result.scores.bestPractices} icon={<Layout size={14} />} /><ScoreCircle title="SEO" score={result.scores.seo} icon={<TrendingUp size={14} />} />
-          </div>
-
-          {fixLog.length > 0 && (
-            <div className={styles.fixHistory + " glass-card animate-slide-up"}>
-              <div className={styles.historyHeader}><div className={styles.historyTitleRow}><History size={18} color="var(--success)" /><h4>Precision Trace Log ({fixLog.length})</h4></div><button className={styles.pushBtn} onClick={() => handlePushToShopify()} disabled={pushLoading === "all"}>{pushLoading === "all" ? <Loader2 className={styles.spin} size={14} /> : <CloudUpload size={16} />} Sync All Changes</button></div>
-              <div className={styles.historyList}>
-                {fixLog.map((log, idx) => (
-                  <div key={idx} className={styles.historyItem}><div className={styles.historyItemMain}><div className={styles.itemSubject}><span>✓ <strong>{log.fileChanged}</strong> updated.</span><small>{log.summary}</small>{log.riskLevel && <span className={`${styles.historyRisk} ${styles['risk' + log.riskLevel]}`}>Applied as {log.riskLevel} Case</span>}</div><div className={styles.itemActions}><button className={styles.diffViewBtn} onClick={() => handleShowDiffViewer(log.fileChanged)}><FileSearch size={14} /> See Diff</button><button className={styles.targetedPushBtn} onClick={() => handlePushToShopify(log.fileChanged)} disabled={pushLoading === log.fileChanged}>{pushLoading === log.fileChanged ? <Loader2 className={styles.spin} size={12} /> : <Upload size={12} />} Re-Push Unit</button></div></div></div>
-                ))}
+          {activeTab === 'lighthouse' ? (
+            <div className={styles.lighthouseFrameWrapper}><iframe srcDoc={result.html} className={styles.lighthouseFrame} /></div>
+          ) : (
+            <div className={styles.insightsView}>
+              <div className={styles.gridScores}>
+                <ScoreCircle title="Performance" score={result.scores.performance} icon={<Zap size={14} />} />
+                <ScoreCircle title="Access" score={result.scores.accessibility} icon={<UserCheck size={14} />} />
               </div>
-            </div>
-          )}
 
-          <div className={styles.metricsWrapper + " glass-card"}><h3>Key Metrics</h3><div className={styles.metricsGrid}><MetricCard title="First Contentful Paint" value={result.metrics.fcp} /><MetricCard title="Largest Contentful Paint" value={result.metrics.lcp} type="lcp" /><MetricCard title="Total Blocking Time" value={result.metrics.tbt} type="tbt" /><MetricCard title="Cumulative Layout Shift" value={result.metrics.cls} type="cls" /><MetricCard title="Speed Index" value={result.metrics.si} /><MetricCard title="Time to Interactive" value={result.metrics.tti} /></div></div>
-
-          {globalLoading ? (
-            <div className={styles.globalLoadingCard + " glass-card"}>
-              <Loader2 className={styles.spin} size={24} />
-              <p>Antigravity is architecting a global performance strategy...</p>
-            </div>
-          ) : globalError === "__PENDING__" ? (
-            <div className={styles.globalErrorCard + " glass-card"}>
-              <Bot size={28} color="var(--primary)" />
-              <div className={styles.globalErrorText}>
-                <h4>⏳ Fixes Not Generated Yet</h4>
-                <p>The audit has been saved. Share your audit data with the AI assistant and ask it to generate fixes. Once generated, click <strong>Load Fixes</strong> below.</p>
-                <button onClick={handleLoadFixes} className={styles.retryBtn}>
-                  <RefreshCw size={14} /> Load Fixes
-                </button>
-              </div>
-            </div>
-          ) : globalFixes && (
-            <div className={styles.globalPlanSection + " glass-card animate-slide-up"}>
-              <div className={styles.globalHeader}>
-                <Sparkle size={24} color="var(--primary)" />
-                <div className={styles.globalHeaderText}>
-                  <div className={styles.globalTitleRow}>
+              {globalFixes && (
+                <div className={styles.globalPlanSection + " glass-card"}>
+                  <div className={styles.globalHeader}>
                     <h3>Antigravity Global Optimization Plan</h3>
-                    {result && (
-                      <div className={styles.globalActions}>
-                        <button
-                          className={styles.batchBtn}
-                          onClick={handleBatchApplyLowRisk}
-                          disabled={globalLoading || pushLoading === "batch" || lowRiskFixes.length === 0}
-                        >
-                          {pushLoading === "batch" ? <Loader2 className={styles.spin} size={14} /> : <Layers size={14} />}
-                          Batch Apply Low-Risk {totalBatchSavings > 0 && `(~${totalBatchSavings}ms)`}
-                        </button>
-                        <button
-                          className={styles.refreshStrategyBtn}
-                          onClick={handleLoadFixes}
-                          disabled={globalLoading}
-                        >
-                          {globalLoading ? <RefreshCw className={styles.spin} size={14} /> : <RefreshCw size={14} />}
-                          Refresh Fixes
-                        </button>
-                      </div>
-                    )}
+                    <p>{globalFixes.executiveSummary}</p>
+                    <button className={styles.batchBtn} onClick={handleBatchApplyLowRisk}>Batch Apply Low Risk</button>
                   </div>
-                  <p>{globalFixes.executiveSummary}</p>
-                </div>
-              </div>
-              <div className={styles.globalFixList}>
-                {globalFixes.fixes?.map((fix, i) => (
-                  <div key={i} className={styles.globalFixItem + " glass-card animate-slide-up"} style={{ animationDelay: `${i * 0.1}s` }}>
-                    <div className={styles.fixInfo}>
-                      <div className={styles.fixTitleRow}>
-                        <div className={styles.fixBadge}>{fix.category.toUpperCase()}</div>
-                        <h4>{fix.title}</h4>
-                        {fix.isBreaking && <div className={styles.breakingBadge}>BREAKING</div>}
-                      </div>
-
-                      <div className={styles.fixMetaRow}>
-                        <div className={styles.fixMetaItem}>
-                          <Zap size={12} className={styles['impact' + fix.impact]} />
-                          <b>Impact:</b> <span className={styles['impact' + fix.impact]}>{fix.impact}</span>
+                  <div className={styles.globalFixList}>
+                    {globalFixes.fixes.map((fix, i) => (
+                      <div key={i} className={styles.globalFixItem + " glass-card"}>
+                        <div className={styles.fixInfo}>
+                          <h4>{fix.title}</h4>
+                          <p>{fix.explanation}</p>
+                          <code className={styles.fixPath}>{fix.filePath} (Target: {fix.targetAsset})</code>
                         </div>
-                        <div className={styles.fixMetaItem}>
-                          <Clock size={12} />
-                          <b>Savings:</b> <span className={styles.savingsBadge}>{fix.savings}</span>
-                        </div>
-                        <div className={`${styles.riskBadge} ${styles['risk' + fix.riskLevel]}`}>
-                          Risk: {fix.riskLevel}
-                        </div>
-                        {fix._validation && (
-                          <div className={`${styles.validationBadge} ${fix._validation === 'VERIFIED' ? styles.validationOk : fix._validation === 'VERIFIED_NORMALIZED' ? styles.validationOk : fix._validation === 'ALREADY_APPLIED' ? styles.validationWarn : styles.validationFail}`}>
-                            {fix._validation === 'VERIFIED' ? '✅ Verified' : fix._validation === 'VERIFIED_NORMALIZED' ? '⚠️ Approx Match' : fix._validation === 'ALREADY_APPLIED' ? '🔄 Already Applied' : '❌ Not Found on Disk'}
-                          </div>
-                        )}
+                        <button className={styles.reviewFixBtn} onClick={() => handleApplyGlobalFix(fix)}>Review Fix <Sparkle size={14} /></button>
                       </div>
-
-                      <p className={styles.fixExplanation}>{fix.explanation}</p>
-                      {fix._warning && (
-                        <div className={styles.fixWarning}>⚠️ {fix._warning}</div>
-                      )}
-                      <div className={styles.fixPathRow}>
-                        <code className={styles.fixPath}><FileCode size={12} /> {fix.filePath}</code>
-                      </div>
-                    </div>
-                    <button
-                      className={styles.reviewFixBtn}
-                      onClick={() => handleApplyGlobalFix(fix)}
-                      disabled={fix._validation === 'FILE_NOT_FOUND'}
-                    >
-                      Review Fix <Wand2 size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className={styles.suggestionSection}>
-            <div className={styles.suggestionHeader}><TrendingUp size={24} color="var(--primary)" /><h3>Audit Opportunity Trace</h3><span className={styles.badge}>Live Action Engine</span></div>
-            <div className={styles.suggestionList}>
-              {result.opportunities.map(opp => {
-                const associatedFix = globalFixes?.fixes?.find(f => f.linkedAuditId === opp.id);
-                return (
-                  <SuggestionItem
-                    key={opp.id}
-                    oppId={opp.id}
-                    title={opp.title}
-                    savings={opp.displayValue}
-                    impact={opp.score < 0.5 ? "High" : "Medium"}
-                    desc={opp.description}
-                    canFix={fixesIdentified}
-                    onFix={() => handleIdentityUnitFix(opp)}
-                    aiFix={associatedFix}
-                    onApplyAiFix={handleApplyGlobalFix}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Unit Review Modal with Steps */}
-      {showUnitReview && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modalContent + " " + styles.diffCheckerModal}>
-            <div className={styles.modalHeader}>
-              <div className={styles.aiHeaderTitle}><Cpu size={24} color="var(--primary)" /><h3>Precision Fix: {unitData?.fileChanged || "Targeting Asset..."}</h3></div>
-              <div className={styles.diffLabels}>
-                {!isEditing && (
-                  <>
-                    <div className={styles.labelOld}>Current</div>
-                    <ArrowRight size={14} />
-                    <div className={styles.labelNew}>Optimized</div>
-                  </>
-                )}
-                <button
-                  className={`${styles.manualEditBtn} ${isEditing ? styles.active : ""}`}
-                  onClick={() => setIsEditing(!isEditing)}
-                >
-                  <Edit3 size={14} /> {isEditing ? "View Diff" : "Manual Edit"}
-                </button>
-              </div>
-              <button className={styles.closeBtn} onClick={() => setShowUnitReview(false)}><X size={24} /></button>
-            </div>
-            <div className={styles.diffContainer}>
-              {unitReviewLoading ? (
-                <div className={styles.statusBoxCentered}>
-                  <div className={styles.thinkingSpinner} />
-                  <div className={styles.stepsList}>
-                    {activeSteps.map((step, i) => (
-                      <div key={i} className={styles.stepItem}><CheckCircle2 size={14} color="var(--success)" /> {step}</div>
                     ))}
-                    <div className={styles.stepItem}><Loader2 className={styles.spin} size={14} /> Performing surgical analysis...</div>
-                  </div>
-                </div>
-              ) : (
-                <div className={styles.unitLayout}>
-                  {isEditing ? (
-                    <div className={styles.editorLayout}>
-                      <div className={styles.editorPane}>
-                        <div className={styles.paneHeader}>
-                          <span>ORIGINAL SNIPPET (READ-ONLY)</span>
-                          <span style={{ color: 'var(--fail)' }}>Characters: {unitData?.originalSnippet?.length || 0}</span>
-                        </div>
-                        <div className={styles.readOnlyArea}>{unitData?.originalSnippet}</div>
-                      </div>
-                      <div className={styles.editorPane}>
-                        <div className={styles.paneHeader}>
-                          <span style={{ color: 'var(--primary)' }}>CUSTOM OPTIMIZATION (EDITABLE)</span>
-                          <span style={{ color: 'var(--success)' }}>Characters: {unitData?.fixedSnippet?.length || 0}</span>
-                        </div>
-                        <textarea
-                          className={styles.codeTextArea}
-                          value={unitData?.fixedSnippet || ""}
-                          onChange={(e) => setUnitData({ ...unitData, fixedSnippet: e.target.value })}
-                          spellCheck={false}
-                          placeholder="Type your manual fix here..."
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className={styles.diffScroll}><ReactDiffViewer oldValue={unitData?.originalSnippet || ""} newValue={unitData?.fixedSnippet || ""} splitView={true} useDarkTheme={true} compareMethod={DiffMethod.CHARS} styles={diffStyles} /></div>
-                  )}
-                  <div className={styles.unitFooter}>
-                    <div className={styles.unitImpact}>
-                      <Zap size={18} color="var(--primary)" />
-                      <div>
-                        <strong>Trace Strategy</strong>
-                        <p>{unitData?.impact || "Ready for deployment to theme ID 185064653119."}</p>
-                        {unitData?.riskLevel && (
-                          <div className={`${styles.modalRiskRow} ${styles['risk' + unitData.riskLevel]}`}>
-                            {unitData.isBreaking ? '⚠️ CRITICAL/BREAKING' : 'Risk assessment'}: {unitData.riskLevel}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className={styles.unitActions}>
-                      {autoDeploy && (
-                        <div
-                          className={styles.cmdPreview}
-                          style={{ cursor: 'pointer' }}
-                          title="Click to copy deployment command"
-                          onClick={() => {
-                            const cmd = `shopify theme push --store thriveco-in.myshopify.com --theme 153290309772 --only ${unitData?.fileChanged || 'all'} --force`;
-                            navigator.clipboard.writeText(cmd);
-                            alert("Deployment command copied to clipboard!");
-                          }}
-                        >
-                          <Terminal size={12} color="var(--primary)" />
-                          <code>
-                            shopify theme push --store thriveco-in.myshopify.com --theme 153290309772 --only {unitData?.fileChanged} --force
-                          </code>
-                        </div>
-                      )}
-                      <div className={styles.autoDeployToggle} onClick={() => setAutoDeploy(!autoDeploy)}>
-                        <div className={autoDeploy ? styles.toggleOn : styles.toggleOff}>
-                          {autoDeploy ? <Zap size={14} /> : <ZapOff size={14} />}
-                        </div>
-                        <span>Auto-Deploy Fix</span>
-                      </div>
-                      <button className={styles.applyUnitBtn} onClick={handleApplyUnitFix}>
-                        {autoDeploy ? "Execute Sync Command" : "Apply to Local Disk"} <Sparkle size={14} />
-                      </button>
-                    </div>
                   </div>
                 </div>
               )}
+
+              <div className={styles.suggestionSection}>
+                <h3>Opportunities</h3>
+                <div className={styles.suggestionList}>
+                  {result.opportunities.map(opp => (
+                    <SuggestionItem
+                      key={opp.id}
+                      title={opp.title}
+                      savings={opp.displayValue}
+                      impact="High"
+                      desc={opp.description}
+                      aiFix={globalFixes?.fixes?.find(f => f.linkedAuditId === opp.id)}
+                      onApplyAiFix={handleApplyGlobalFix}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className={styles.suggestionSection}>
+                <h3>Diagnostics</h3>
+                <div className={styles.suggestionList}>
+                  {result.diagnostics.map(diag => (
+                    <SuggestionItem
+                      key={diag.id}
+                      title={diag.title}
+                      savings={diag.displayValue}
+                      impact="Medium"
+                      desc={diag.description}
+                      aiFix={globalFixes?.fixes?.find(f => f.linkedAuditId === diag.id)}
+                      onApplyAiFix={handleApplyGlobalFix}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {showUnitReview && unitData && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modalContent}>
+            <div className={styles.modalHeader}><h3>Review Fix: {unitData.fileChanged}</h3><button onClick={() => setShowUnitReview(false)}><X size={24} /></button></div>
+            <div className={styles.diffContainer}>
+              <ReactDiffViewer oldValue={unitData.originalSnippet} newValue={unitData.fixedSnippet} splitView={true} useDarkTheme={true} />
+            </div>
+            <div className={styles.unitFooter}>
+              <button className={styles.applyUnitBtn} onClick={handleApplyUnitFix} disabled={!!pushLoading}>
+                {pushLoading === unitData.id ? "Syncing..." : "Apply Optimization"}
+              </button>
             </div>
           </div>
         </div>
-      )}
-
-      {/* Standard Diff Modal */}
-      {showDiff && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modalContent + " " + styles.diffCheckerModal}>
-            <div className={styles.modalHeader}><div className={styles.aiHeaderTitle}><FileSearch size={24} color="var(--success)" /><h3>Diff Review: {diffData?.fileName}</h3></div><button className={styles.closeBtn} onClick={() => setShowDiff(false)}><X size={24} /></button></div>
-            <div className={styles.diffContainer}>{diffLoading ? <div className={styles.diffLoadingState}><div className={styles.thinkingSpinner} /><p>Loading diff...</p></div> : <div className={styles.diffScroll}><ReactDiffViewer oldValue={diffData?.old || ""} newValue={diffData?.new || ""} splitView={true} compareMethod={DiffMethod.CHARS} styles={diffStyles} /></div>}</div>
-          </div>
-        </div>
-      )}
-
-      {showFullReport && result && (
-        <div className={styles.modalOverlay}><div className={styles.modalContent}><div className={styles.modalHeader}><h3>Detailed Lighthouse</h3><button className={styles.closeBtn} onClick={() => setShowFullReport(false)}><X size={24} /></button></div><iframe className={styles.reportIframe} srcDoc={result.html} /></div></div>
       )}
     </main>
   );
 }
 
-const diffStyles = {
-  variables: {
-    dark: {
-      diffViewerBackground: '#0d0d12',
-      diffViewerColor: '#e2e8f0',
-      addedBackground: 'rgba(52, 211, 153, 0.1)',
-      addedColor: '#34d399',
-      removedBackground: 'rgba(248, 113, 113, 0.1)',
-      removedColor: '#f87171',
-      wordAddedBackground: 'rgba(52, 211, 153, 0.25)',
-      wordRemovedBackground: 'rgba(248, 113, 113, 0.25)',
-      addedGutterBackground: 'rgba(52, 211, 153, 0.08)',
-      removedGutterBackground: 'rgba(248, 113, 113, 0.08)',
-      gutterBackground: '#0d0d12',
-      gutterBackgroundDark: '#0a0a0f',
-      highlightBackground: 'rgba(124, 58, 237, 0.1)',
-      highlightGutterBackground: 'rgba(124, 58, 237, 0.15)',
-      codeFoldGutterBackground: '#16161e',
-      codeFoldBackground: '#16161e',
-      emptyLineBackground: '#0d0d12',
-    }
-  },
-  line: { padding: '4px 0', fontSize: '13px' },
-  gutter: { padding: '0 15px', minWidth: '60px' },
-  contentText: { fontFamily: "'JetBrains Mono', 'Fira Code', monospace", fontSize: '13px' }
-};
-
-function ScoreCircle({ title, score, icon }: { title: string, score: number, icon: React.ReactNode }) {
-  const color = score > 89 ? "var(--success)" : score > 49 ? "var(--average)" : "var(--fail)";
-  const circumference = 2 * Math.PI * 45; const offset = circumference - (score / 100) * circumference;
-  return (<div className={styles.scoreBox}><div className={styles.gaugeContainer}><svg viewBox="0 0 100 100" className={styles.gauge}><circle cx="50" cy="50" r="45" className={styles.gaugeBg} /><circle cx="50" cy="50" r="45" className={styles.gaugeFill} style={{ stroke: color, strokeDasharray: circumference, strokeDashoffset: offset }} /></svg><div className={styles.scoreText} style={{ color }}>{score}</div></div><div className={styles.scoreTitle}>{icon} {title}</div></div>);
+function ScoreCircle({ title, score, icon }: any) {
+  return (<div className={styles.scoreBox}><div className={styles.scoreText}>{score}</div><div className={styles.scoreTitle}>{icon} {title}</div></div>);
 }
 
-function MetricCard({ title, value, type }: { title: string, value: string, type?: string }) {
-  let status = "good"; if (value && value !== "--") { const val = parseFloat(value.replace(/[^0-9.]/g, '')); if (type === "lcp" && val > 2.5) status = val > 4 ? "poor" : "needs-improvement"; else if (type === "tbt" && val > 300) status = val > 600 ? "poor" : "needs-improvement"; else if (type === "cls" && val > 0.1) status = val > 0.25 ? "poor" : "needs-improvement"; }
-  const icon = status === "good" ? <CheckCircle2 color="var(--success)" size={16} /> : status === "poor" ? <AlertTriangle color="var(--fail)" size={16} /> : <AlertCircle color="var(--average)" size={16} />;
-  return (<div className={styles.metricCard}><div className={styles.metricHeader}><span className={styles.metricTitle}>{title}</span>{icon}</div><div className={styles.metricValue}>{value}</div></div>);
-}
-
-function SuggestionItem({ title, savings, impact, desc, oppId, canFix, onFix, aiFix, onApplyAiFix }: {
-  title: string,
-  savings: string,
-  impact: string,
-  desc: string,
-  oppId: string,
-  canFix: boolean,
-  onFix: () => void,
-  aiFix?: any,
-  onApplyAiFix?: (fix: any) => void
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [fixing, setFixing] = useState(false);
-
-  const handleFixClick = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setFixing(true);
-    try { await onFix(); } catch (e) { } finally { setFixing(false); }
-  };
-
+function SuggestionItem({ title, savings, impact, desc, aiFix, onApplyAiFix }: any) {
   return (
-    <div className={`${styles.suggestionItem} ${expanded ? styles.expandedSug : ""}`} onClick={() => setExpanded(!expanded)}>
-      <div className={styles.suggestionHeaderInner}>
-        <div className={styles.suggestionMain}>
-          <div className={styles.suggestionInfo}>
-            <div className={styles.titleRow}>
-              {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              <h4>{title}</h4>
-            </div>
-            <span className={impact === "High" ? styles.highImpact : impact === "Diagnostic" ? styles.diagImpact : styles.medImpact}>
-              {impact}
-            </span>
-          </div>
-          <div className={styles.fixActionArea}>
-            <div className={styles.suggestionSavings}>{savings}</div>
-            <div className={styles.statusIndicator}>
-              {aiFix ? <Sparkle size={14} color="var(--primary)" /> : <Zap size={14} color="var(--text-muted)" />}
-            </div>
-          </div>
+    <div className={styles.suggestionItem + " glass-card"}>
+      <div className={styles.suggestionMain}>
+        <div className={styles.suggestionHeaderInfo}>
+          <h4>{title}</h4>
+          <span className={styles.savingsBadge}>{savings}</span>
         </div>
+        <p>{desc}</p>
+        {aiFix && (
+          <button className={styles.aiFixBadgeBtn} onClick={() => onApplyAiFix(aiFix)}>
+            <Zap size={12} /> AI FIX AVAILABLE: {aiFix.title}
+          </button>
+        )}
       </div>
-
-      {expanded && (
-        <div className={styles.suggestionDesc} onClick={(e) => e.stopPropagation()}>
-          <p dangerouslySetInnerHTML={{ __html: desc.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>') }} />
-
-          <div className={styles.solutionBox}>
-            <div className={styles.solutionHeader}>
-              <Cpu size={16} color="var(--primary)" />
-              <strong>Antigravity Surgical Strategy</strong>
-            </div>
-
-            {aiFix ? (
-              <div className={styles.aiResultCard}>
-                <div className={styles.aiResultBody}>
-                  <div className={styles.aiResultTitleRow}>
-                    <div className={styles.aiFixBadge}>{aiFix.category?.toUpperCase() || "CORE"}</div>
-                    <h5>{aiFix.title}</h5>
-                    {aiFix.isBreaking && <span className={styles.breakingBadgeSmall}>BREAKING</span>}
-                    <div className={`${styles.riskBadgeSmall} ${styles['risk' + aiFix.riskLevel]}`}>Risk: {aiFix.riskLevel}</div>
-                  </div>
-                  <p>{aiFix.explanation}</p>
-                  <code className={styles.fixPathMini}><FileCode size={10} /> {aiFix.filePath}</code>
-                </div>
-                <button className={styles.reviewBtnInline} onClick={() => onApplyAiFix?.(aiFix)}>
-                  Review & Apply Fix <ArrowRight size={14} />
-                </button>
-              </div>
-            ) : (
-              <div className={styles.noAiFixState}>
-                <p>No automated strategy available yet for this specific audit.</p>
-                {canFix && (
-                  <button className={styles.generateBtnInline} disabled={fixing} onClick={handleFixClick}>
-                    {fixing ? <Loader2 className={styles.spin} size={14} /> : "Generate Targeted Fix"}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
