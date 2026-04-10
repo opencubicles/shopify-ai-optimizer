@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { exec, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
 
 const THEME_PATH = process.env.THEME_PATH || path.join(process.cwd(), "..", "theme");
 
@@ -27,7 +31,7 @@ function getCriticalFileList() {
 
 export async function POST(req: NextRequest) {
     try {
-        const { url, issueId, title, details, previewOnly, originalSnippet, fixedSnippet, filePath } = await req.json();
+        const { url, fixId, title, details, previewOnly, originalSnippet, fixedSnippet, diff, filePath } = await req.json();
 
         const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
         if (!apiKey) return NextResponse.json({ error: "Missing Gemini API Key" }, { status: 500 });
@@ -36,84 +40,79 @@ export async function POST(req: NextRequest) {
         let identifiedFile = filePath || "";
         if (identifiedFile.startsWith('theme/')) identifiedFile = identifiedFile.replace('theme/', '');
 
-        if (originalSnippet && fixedSnippet && identifiedFile) {
-            // USE PRE-GENERATED FIX (from Global Analysis or previous Preview)
-            fixData = {
-                filePath: identifiedFile,
-                originalSnippet,
-                fixedSnippet,
-                impactAnalysis: "Applied from reviewed suggestion."
-            };
-        } else {
-            // GENERATE NEW FIX VIA AI
-            const genAI = new GoogleGenerativeAI(apiKey);
-            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        // NEW: PYTHON PATCHER INTEGRATION
+        if (diff && identifiedFile && !previewOnly) {
+            console.log(`[ApplyFix] Calling Python patcher for ${identifiedFile}`);
+            try {
+                const pythonScript = path.join(process.cwd(), "..", "scripts", "patcher.py");
+                const inputData = JSON.stringify({ filePath: identifiedFile, diff });
 
-            const fileList = getCriticalFileList();
-            let auditUrls: string[] = [];
-            if (details?.items) auditUrls = details.items.map((item: any) => item.url).filter((u: string) => typeof u === 'string');
+                const result = await new Promise<any>((resolve, reject) => {
+                    const child = spawn("python3", [pythonScript]);
+                    let stdout = "";
+                    let stderr = "";
 
-            // Asset Precision Trace
-            if (!identifiedFile) {
-                if (auditUrls.length > 0) {
-                    const bestMatch = fileList.find(f => auditUrls.some(u => u.includes(f.split('/').pop() || "")));
-                    identifiedFile = bestMatch || "layout/theme.liquid";
-                } else {
-                    identifiedFile = "layout/theme.liquid";
+                    child.stdout.on("data", (data) => stdout += data.toString());
+                    child.stderr.on("data", (data) => stderr += data.toString());
+
+                    child.on("close", (code) => {
+                        if (code !== 0) {
+                            reject(new Error(stderr || `Python exit code ${code}`));
+                            return;
+                        }
+                        try {
+                            const parsed = JSON.parse(stdout);
+                            resolve(parsed);
+                        } catch (e) {
+                            reject(new Error(`Failed to parse Python output: ${stdout}`));
+                        }
+                    });
+
+                    child.stdin.write(inputData);
+                    child.stdin.end();
+                });
+
+                if (!result.success) {
+                    throw new Error(result.error);
                 }
+
+                // --- MANIFEST SYNC: Remove the fix from generated-fixes.json after success ---
+                const manifestPath = path.join(process.cwd(), "..", "data", "generated-fixes.json");
+                if (fs.existsSync(manifestPath)) {
+                    try {
+                        const manifestContent = fs.readFileSync(manifestPath, 'utf8');
+                        const manifest = JSON.parse(manifestContent);
+                        if (manifest.fixes && Array.isArray(manifest.fixes)) {
+                            const updatedFixes = manifest.fixes.filter((f: any) => f.id !== fixId);
+                            manifest.fixes = updatedFixes;
+                            fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+                            console.log(`[Manifest] Removed fix ${fixId} from manifest.`);
+                        }
+                    } catch (mErr) {
+                        console.error("[Manifest] Failed to sync manifest:", mErr);
+                        // Don't fail the whole request just because manifest sync failed
+                    }
+                }
+
+                return NextResponse.json({
+                    success: true,
+                    title: title || "Optimization Applied",
+                    summary: result.message,
+                    fileChanged: identifiedFile,
+                    patchDetails: result.patch_details,
+                    steps: [
+                        "Antigravity Precision Engine engaged.",
+                        `Python surgical patch applied to ${identifiedFile}`,
+                        "Manifest synchronized (Fix removed from queue)."
+                    ]
+                });
+            } catch (err: any) {
+                console.error("[ApplyFix] Python script error:", err);
+                return NextResponse.json({ error: `Surgical Patch/Push failed: ${err.message}` }, { status: 500 });
             }
-
-            const themePath = process.env.THEME_PATH || path.join(process.cwd(), "..", "theme");
-            // Robust path handling: strip leading 'theme/' if present
-            if (identifiedFile.startsWith('theme/')) {
-                identifiedFile = identifiedFile.replace('theme/', '');
-            }
-            const fullPath = path.join(themePath, identifiedFile);
-            if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) identifiedFile = "layout/theme.liquid";
-
-            const finalPathLoc = path.join(themePath, identifiedFile);
-            const rawContent = fs.readFileSync(finalPathLoc, 'utf8');
-            const lines = rawContent.split('\n');
-
-            // Context Chunking for speed
-            const chunkedLines = lines.length > 1000 ? lines.slice(0, 1000) : lines;
-            const contentWithLines = chunkedLines.map((l, i) => `${i + 1}| ${l}`).join('\n');
-
-            const prompt = `
-          Antigravity Surgical Engine [Gemini Precision Model].
-          Audit: ${title} (${issueId})
-          File: ${identifiedFile}
-          PageSpeed JSON: ${JSON.stringify(details)}
-          
-          Source (Lines 1 to ${chunkedLines.length}):
-          ${contentWithLines}
-
-          TASK: Return a surgical precision patch JSON:
-          {
-             "filePath": "${identifiedFile}",
-             "originalSnippet": "exact code",
-             "fixedSnippet": "optimized code",
-             "startLine": number,
-             "endLine": number,
-             "impactAnalysis": "A 2-3 paragraph technical explanation. PARAGRAPH 1: Detail precisely WHAT was changed in the code. PARAGRAPH 2: Explain WHY this was necessary based on the audit opportunities. PARAGRAPH 3: State the expected performance IMPROVEMENT for this specific unit.",
-             "impactScore": "High/Medium/Low",
-             "savings": "Estimated ms savings",
-             "riskLevel": "High/Medium/Low",
-             "isBreaking": boolean
-          }
-          
-          RISK CRITERIA:
-          - High: Script deletion/modification, breaking third-party tags.
-          - Medium: CSS layout changes, altering Liquid loops.
-          - Low: Meta tag additions, preloading assets.
-
-          Ensure originalSnippet matches character-by-character. Only return JSON.
-        `;
-
-            const result = await model.generateContent(prompt);
-            const text = result.response.text().trim().replace(/```json|```/g, '');
-            fixData = JSON.parse(text);
         }
+
+        // --- LEGACY/FALLBACK LOGIC BELOW (if no diff or preview mode) ---
 
         const finalPath = path.join(THEME_PATH, identifiedFile);
         const diskContent = fs.readFileSync(finalPath, 'utf8');

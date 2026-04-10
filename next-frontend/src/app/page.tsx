@@ -140,6 +140,7 @@ export default function AutoDeployDashboard() {
             impact: fix.impact + " strategy applied to " + fix.targetAsset,
             originalSnippet: fix.originalSnippet,
             fixedSnippet: fix.fixedSnippet,
+            diff: fix.diff,
             riskLevel: fix.riskLevel,
             isBreaking: fix.isBreaking,
             source: 'ai'
@@ -215,7 +216,6 @@ export default function AutoDeployDashboard() {
       setGlobalLoading(false);
     }
   };
-
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [activePrompt, setActivePrompt] = useState<any>(null);
 
@@ -238,9 +238,13 @@ ISSUE: ${title}
 TARGETS TO OPTIMIZE:
 ${targets}
 
-TASK: Generate individual surgical patches for EVERY asset listed above.
-FORMAT: Return output ONLY as a JSON ARRAY [...] suitable for merging into 'generated-fixes.json'.
-EACH ITEM KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, linkedNodeId (matching the specific Row ID).`;
+TASK: Generate individual surgical patches for EVERY asset listed above AND SAVE RESULTS TO JSON.
+MISSION PROTOCOL: Use a UNIFIED DIFF (unidiff) approach with at least 3 lines of context. Your output must contain a character-perfect diff for each fix.
+FORMAT: Return output ONLY as a JSON ARRAY [...] of objects nested inside a 'fixes' key, with an 'executiveSummary' at the root.
+REQUIRED KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, diff, linkedNodeId (matching the specific Row ID).
+DIFF FORMAT: Standard unified diff (---/+++/@@/-/+).
+
+SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json`;
     } else {
       const resource = itemOrItems.url || itemOrItems.text || itemOrItems.label || "General Resource";
       resourceLabel = resource;
@@ -248,9 +252,14 @@ EACH ITEM KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, 
 ID: ${nodeId}
 Issue Type: ${title}
 Specific Resource: ${resource}
-Task: Review ONLY this specific asset and generate a surgical performance fix. 
-Format: Return output ONLY as a JSON object suitable for 'generated-fixes.json'.
-Keys: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, linkedNodeId (set to '${nodeId}').`;
+
+TASK: Review ONLY this specific asset, generate a surgical performance fix, AND SAVE TO JSON.
+MISSION PROTOCOL: Use a UNIFIED DIFF (unidiff) approach with at least 3 lines of context. Your output must contain a character-perfect diff for the fix.
+FORMAT: Return output ONLY as a JSON object with a 'fixes' array (containing this one fix) and an 'executiveSummary'.
+REQUIRED KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, diff, linkedNodeId (set to '${nodeId}').
+DIFF FORMAT: Standard unified diff (---/+++/@@/-/+).
+
+SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json`;
     }
 
     setActivePrompt({ nodeId, title, resource: resourceLabel, promptText, isBatch, count: isBatch ? itemOrItems.length : 1 });
@@ -264,6 +273,7 @@ Keys: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnipp
       impact: fix.impact + " strategy applied to " + (fix.targetAsset || "Main-Thread"),
       originalSnippet: fix.originalSnippet,
       fixedSnippet: fix.fixedSnippet,
+      diff: fix.diff,
       riskLevel: fix.riskLevel,
       isBreaking: fix.isBreaking,
       source: 'ai'
@@ -283,6 +293,7 @@ Keys: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnipp
           fixId: unitData.id,
           originalSnippet: unitData.originalSnippet,
           fixedSnippet: unitData.fixedSnippet,
+          diff: unitData.diff,
           filePath: unitData.fileChanged
         })
       });
@@ -668,7 +679,10 @@ function AuditDetailTable({ details, parentNodeId, fixes, onApplyAiFix, onOpenPr
                       🔍 Review Fix
                     </button>
                   ) : (
-                    <button className={styles.miniPromptBtn} onClick={() => onOpenPrompt(rowNodeId, details.title || "Audit", item)}>
+                    <button
+                      className={styles.miniPromptBtn}
+                      onClick={() => onOpenPrompt(rowNodeId, details.title || "Audit", item)}
+                    >
                       ⚡ Fix Asset
                     </button>
                   )}
