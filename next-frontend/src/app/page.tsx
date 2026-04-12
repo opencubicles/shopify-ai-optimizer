@@ -109,6 +109,10 @@ export default function AutoDeployDashboard() {
   const [diffLoading, setDiffLoading] = useState(false);
   const [pushLoading, setPushLoading] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
+  const [deployLoading, setDeployLoading] = useState(false);
+  const [deployResult, setDeployResult] = useState<any>(null);
+  const [showDeployModal, setShowDeployModal] = useState(false);
+  const [appliedFixIds, setAppliedFixIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -166,6 +170,10 @@ export default function AutoDeployDashboard() {
       if (data.ready) {
         setGlobalFixes(data);
         setFixesIdentified(true);
+        if (data.fixes) {
+          const appliedIds = new Set<string>(data.fixes.filter((f: any) => f.status === 'applied').map((f: any) => f.id));
+          setAppliedFixIds(prev => new Set([...prev, ...appliedIds]));
+        }
       }
     } catch (err) {
       console.error("Failed to sync manifest:", err);
@@ -193,8 +201,8 @@ export default function AutoDeployDashboard() {
 
       const mapped = mapLighthouseResult(data, url, device);
       setResult(mapped);
-      setFixesIdentified(true);
-      handleLoadFixes();
+      setIsOrchestrated(true);
+      handleSyncFixes();
     } catch (err: any) {
       setError(err.message);
       alert(err.message);
@@ -203,19 +211,7 @@ export default function AutoDeployDashboard() {
     }
   };
 
-  const handleLoadFixes = async () => {
-    setGlobalLoading(true);
-    try {
-      const res = await fetch("/api/load-fixes");
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setGlobalFixes(data);
-    } catch (err: any) {
-      setGlobalError("__PENDING__");
-    } finally {
-      setGlobalLoading(false);
-    }
-  };
+
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [activePrompt, setActivePrompt] = useState<any>(null);
 
@@ -240,6 +236,7 @@ ${targets}
 
 TASK: Generate individual surgical patches for EVERY asset listed above AND SAVE RESULTS TO JSON.
 MISSION PROTOCOL: Use a UNIFIED DIFF (unidiff) approach with at least 3 lines of context. Your output must contain a character-perfect diff for each fix.
+EXPLANATION STANDARD: The 'explanation' field MUST be verbose. Detail (1) The Technical Mistake in current code, (2) Exactly how the patch fixes it, and (3) Strategic advantage of this change.
 FORMAT: Return output ONLY as a JSON ARRAY [...] of objects nested inside a 'fixes' key, with an 'executiveSummary' at the root.
 REQUIRED KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, diff, linkedNodeId (matching the specific Row ID).
 DIFF FORMAT: Standard unified diff (---/+++/@@/-/+).
@@ -255,6 +252,7 @@ Specific Resource: ${resource}
 
 TASK: Review ONLY this specific asset, generate a surgical performance fix, AND SAVE TO JSON.
 MISSION PROTOCOL: Use a UNIFIED DIFF (unidiff) approach with at least 3 lines of context. Your output must contain a character-perfect diff for the fix.
+EXPLANATION STANDARD: The 'explanation' field MUST be verbose. Detail (1) The Technical Mistake in current code, (2) Exactly how the patch fixes it, and (3) Strategic advantage of this change.
 FORMAT: Return output ONLY as a JSON object with a 'fixes' array (containing this one fix) and an 'executiveSummary'.
 REQUIRED KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, diff, linkedNodeId (set to '${nodeId}').
 DIFF FORMAT: Standard unified diff (---/+++/@@/-/+).
@@ -271,6 +269,7 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
       id: fix.id,
       fileChanged: fix.filePath,
       impact: fix.impact + " strategy applied to " + (fix.targetAsset || "Main-Thread"),
+      explanation: fix.explanation,
       originalSnippet: fix.originalSnippet,
       fixedSnippet: fix.fixedSnippet,
       diff: fix.diff,
@@ -284,28 +283,46 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
   const handleApplyUnitFix = async () => {
     if (!unitData) return;
     setPushLoading(unitData.id);
-    setActiveSteps(["Syncing patch to Shopify network...", "Bypassing content cache..."]);
+    setActiveSteps(["Creating isolated fix branch...", "Applying surgical diff..."]);
     try {
       const response = await fetch("/api/apply-fix", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fixId: unitData.id,
-          originalSnippet: unitData.originalSnippet,
-          fixedSnippet: unitData.fixedSnippet,
+          title: unitData.title || "Optimization",
           diff: unitData.diff,
-          filePath: unitData.fileChanged
+          filePath: unitData.fileChanged,
+          originalSnippet: unitData.originalSnippet,
+          fixedSnippet: unitData.fixedSnippet
         })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
-      alert("✅ Fix Applied Successfully!");
+      setAppliedFixIds(prev => new Set([...prev, unitData.id]));
+      alert(`✅ Fix applied on branch: ${data.branch}`);
       setShowUnitReview(false);
+      handleSyncFixes();
     } catch (e: any) {
       alert("Failed: " + e.message);
     } finally {
       setPushLoading(null);
       setActiveSteps([]);
+    }
+  };
+
+  const handleDeploy = async () => {
+    setDeployLoading(true);
+    try {
+      const response = await fetch("/api/deploy", { method: "POST" });
+      const data = await response.json();
+      setDeployResult(data);
+      setShowDeployModal(true);
+    } catch (e: any) {
+      setDeployResult({ success: false, error: e.message });
+      setShowDeployModal(true);
+    } finally {
+      setDeployLoading(false);
     }
   };
 
@@ -333,8 +350,10 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
     try {
       const res = await fetch('/api/last-audit');
       const rawData = await res.json();
-      setResult(mapLighthouseResult(rawData, rawData.lighthouseResult?.requestedUrl || "", "mobile"));
-      handleLoadFixes();
+      const mapped = mapLighthouseResult(rawData, rawData.lighthouseResult?.requestedUrl || "", "mobile");
+      setResult(mapped);
+      setIsOrchestrated(true);
+      handleSyncFixes();
     } catch (err: any) {
       alert("No cached audit found.");
     } finally {
@@ -457,11 +476,7 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
                   <RefreshCw size={14} />
                 </button>
               )}
-              {result && !isOrchestrated && (
-                <button className={styles.orchestrateBtn} onClick={() => { setIsOrchestrated(true); handleSyncFixes(); }}>
-                  <Wand2 size={16} /> Finalize AI Mission IDs
-                </button>
-              )}
+
             </div>
           </div>
 
@@ -475,7 +490,19 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
               </div>
 
               <div className={styles.suggestionSection}>
-                <h3>All Performance Audits</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                  <h3 style={{ margin: 0 }}>All Performance Audits</h3>
+                  {appliedFixIds.size > 0 && (
+                    <button
+                      className={styles.batchBtn}
+                      onClick={handleDeploy}
+                      disabled={deployLoading}
+                      style={{ padding: '6px 12px', fontSize: '12px' }}
+                    >
+                      {deployLoading ? '...' : `🚀 Deploy All (${appliedFixIds.size})`}
+                    </button>
+                  )}
+                </div>
                 <div className={styles.suggestionList}>
                   {result.opportunities.map(opp => (
                     <SuggestionItem
@@ -522,25 +549,54 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
                   <div className={styles.globalHeader}>
                     <h3>Antigravity Global Optimization Plan</h3>
                     <p>{globalFixes.executiveSummary}</p>
-                    <button className={styles.batchBtn} onClick={handleBatchApplyLowRisk}>Batch Apply Low Risk</button>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                      <button className={styles.batchBtn} onClick={handleBatchApplyLowRisk}>Batch Apply Low Risk</button>
+                      <button
+                        className={styles.batchBtn}
+                        onClick={handleDeploy}
+                        disabled={deployLoading || appliedFixIds.size === 0}
+                        style={{ background: appliedFixIds.size > 0 ? 'linear-gradient(135deg, #0cce6b, #00b4d8)' : '#333', color: '#fff' }}
+                      >
+                        {deployLoading ? 'Merging...' : `🚀 Deploy All (${appliedFixIds.size})`}
+                      </button>
+                    </div>
                   </div>
                   <div className={styles.globalFixList}>
-                    {globalFixes.fixes.map((fix, i) => (
-                      <div key={i} className={styles.globalFixItem + " glass-card"}>
-                        <div className={styles.fixInfo}>
-                          <h4>{fix.title}</h4>
-                          <p>{fix.explanation}</p>
-                          <code className={styles.fixPath}>{fix.filePath} (Target: {fix.targetAsset})</code>
+                    {globalFixes.fixes.map((fix, i) => {
+                      const isApplied = fix.status === 'applied' || appliedFixIds.has(fix.id);
+                      return (
+                        <div key={i} className={styles.globalFixItem + " glass-card"} style={isApplied ? { borderLeft: '3px solid #0cce6b' } : {}}>
+                          <div className={styles.fixInfo}>
+                            <h4>{fix.title}</h4>
+                            <p>{fix.explanation}</p>
+                            <code className={styles.fixPath}>{fix.filePath} (Target: {fix.targetAsset})</code>
+                          </div>
+                          {isApplied ? (
+                            <span style={{ color: '#0cce6b', fontWeight: 700, fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={14} /> APPLIED</span>
+                          ) : (
+                            <button className={styles.reviewFixBtn} onClick={() => handleApplyGlobalFix(fix)}>Review Fix <Sparkle size={14} /></button>
+                          )}
                         </div>
-                        <button className={styles.reviewFixBtn} onClick={() => handleApplyGlobalFix(fix)}>Review Fix <Sparkle size={14} /></button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
               <div className={styles.suggestionSection}>
-                <h3>Opportunities</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                  <h3 style={{ margin: 0 }}>Opportunities</h3>
+                  {appliedFixIds.size > 0 && (
+                    <button
+                      className={styles.batchBtn}
+                      onClick={handleDeploy}
+                      disabled={deployLoading}
+                      style={{ padding: '6px 12px', fontSize: '12px' }}
+                    >
+                      {deployLoading ? '...' : `🚀 Deploy All (${appliedFixIds.size})`}
+                    </button>
+                  )}
+                </div>
                 <div className={styles.suggestionList}>
                   {result.opportunities.map(opp => (
                     <SuggestionItem
@@ -561,7 +617,19 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
               </div>
 
               <div className={styles.suggestionSection}>
-                <h3>Diagnostics</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', marginTop: '40px' }}>
+                  <h3 style={{ margin: 0 }}>Diagnostics</h3>
+                  {appliedFixIds.size > 0 && (
+                    <button
+                      className={styles.batchBtn}
+                      onClick={handleDeploy}
+                      disabled={deployLoading}
+                      style={{ padding: '6px 12px', fontSize: '12px' }}
+                    >
+                      {deployLoading ? '...' : `🚀 Deploy All (${appliedFixIds.size})`}
+                    </button>
+                  )}
+                </div>
                 <div className={styles.suggestionList}>
                   {result.diagnostics.map(diag => (
                     <SuggestionItem
@@ -589,6 +657,10 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
         <div className={styles.modalOverlay}>
           <div className={styles.modalContent}>
             <div className={styles.modalHeader}><h3>Review Fix: {unitData.fileChanged}</h3><button onClick={() => setShowUnitReview(false)}><X size={24} /></button></div>
+            <div className={styles.explanationBox}>
+              <h4>Technical Strategy</h4>
+              <p>{unitData.explanation}</p>
+            </div>
             <div className={styles.diffContainer}>
               <ReactDiffViewer oldValue={unitData.originalSnippet} newValue={unitData.fixedSnippet} splitView={true} useDarkTheme={true} />
             </div>
@@ -626,6 +698,40 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
                   ? "Paste this into your AI to generate a collective FIX ARRAY for all sub-issues in this category."
                   : "Paste this prompt into Antigravity or your AI of choice to generate the surgical fix JSON."}
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeployModal && deployResult && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modalContent}>
+            <div className={styles.modalHeader}>
+              <h3>{deployResult.success ? '🚀 Deploy Successful' : '⚠️ Deploy Issues'}</h3>
+              <button onClick={() => setShowDeployModal(false)}><X size={24} /></button>
+            </div>
+            <div style={{ padding: '20px' }}>
+              <p style={{ marginBottom: '12px', color: deployResult.success ? '#0cce6b' : '#ff4e42' }}>
+                {deployResult.message || deployResult.error}
+              </p>
+              {deployResult.merged && deployResult.merged.length > 0 && (
+                <div style={{ marginBottom: '12px' }}>
+                  <h4 style={{ fontSize: '13px', marginBottom: '6px' }}>✅ Merged Fixes:</h4>
+                  {deployResult.merged.map((id: string) => (
+                    <div key={id} style={{ fontSize: '12px', color: '#0cce6b', padding: '2px 0' }}>{id}</div>
+                  ))}
+                </div>
+              )}
+              {deployResult.conflicts && deployResult.conflicts.length > 0 && (
+                <div>
+                  <h4 style={{ fontSize: '13px', marginBottom: '6px', color: '#ff4e42' }}>❌ Conflicts:</h4>
+                  {deployResult.conflicts.map((c: any) => (
+                    <div key={c.id} style={{ fontSize: '12px', color: '#ff4e42', padding: '2px 0' }}>
+                      {c.id}: {c.error} {c.conflictFiles?.join(', ')}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -675,9 +781,13 @@ function AuditDetailTable({ details, parentNodeId, fixes, onApplyAiFix, onOpenPr
                   {!isOrchestrated ? (
                     <span className={styles.pendingBadge}>PENDING</span>
                   ) : existingFix ? (
-                    <button className={styles.miniReviewBtn} onClick={() => onApplyAiFix(existingFix)}>
-                      🔍 Review Fix
-                    </button>
+                    existingFix.status === 'applied' ? (
+                      <span style={{ color: '#0cce6b', fontWeight: 700, fontSize: '10px' }}>✅ APPLIED</span>
+                    ) : (
+                      <button className={styles.miniReviewBtn} onClick={() => onApplyAiFix(existingFix)}>
+                        🔍 Review Fix
+                      </button>
+                    )
                   ) : (
                     <button
                       className={styles.miniPromptBtn}
