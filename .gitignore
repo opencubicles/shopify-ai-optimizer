@@ -29,3 +29,7 @@ test_bedrock_v2.js
 next-frontend/test_bedrock.js
 next-frontend/*.html
 next-frontend/*.report.html
+
+# Allow scripts folder
+!scripts/
+!scripts/**
