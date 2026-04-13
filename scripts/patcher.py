@@ -21,6 +21,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 THEME_DIR = os.path.join(PROJECT_ROOT, "theme")
 APPLIED_FIXES_FILE = os.path.join(PROJECT_ROOT, "data", "applied-fixes.json")
+GENERATED_FIXES_FILE = os.path.join(PROJECT_ROOT, "data", "generated-fixes.json")
 BASELINE_TAG = "v0-baseline"
 
 
@@ -34,6 +35,48 @@ def git(*args, cwd=None):
         text=True
     )
     return result
+
+
+def ensure_clean_index():
+    """Abort any ongoing merges and clear unresolved entries from the index."""
+    git("merge", "--abort")
+    git("am", "--abort")
+    
+    # Check for unmerged files (conflicts)
+    unmerged = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
+    if unmerged:
+        # If we have unmerged files after aborting, we are in a stuck state.
+        # Force a reset to the last known good commit/tag.
+        # We prefer BASELINE_TAG if it exists, otherwise HEAD.
+        target = BASELINE_TAG
+        r = git("tag", "-l", BASELINE_TAG)
+        if r.stdout.strip() != BASELINE_TAG:
+            target = "HEAD"
+            
+        sys.stderr.write(f"Index is stuck with unmerged paths. Forcing reset to {target}...\n")
+        git("reset", "--hard", target)
+        git("clean", "-fd")
+
+
+def ensure_baseline():
+    """Ensure the baseline tag exists. If not, create it from the current state."""
+    # First, check if the tag exists
+    r = git("tag", "-l", BASELINE_TAG)
+    if r.stdout.strip() == BASELINE_TAG:
+        return True
+
+    # Check if there are any commits. If not, create an initial commit.
+    r = git("rev-parse", "HEAD")
+    if r.returncode != 0:
+        # No commits yet. Create an empty initial commit.
+        git("commit", "--allow-empty", "-m", "Initial baseline commit")
+
+    # Create the tag
+    r = git("tag", BASELINE_TAG)
+    if r.returncode == 0:
+        sys.stderr.write(f"Created fresh baseline tag: {BASELINE_TAG}\n")
+        return True
+    return False
 
 
 def load_applied_fixes():
@@ -160,6 +203,10 @@ def apply_fix(fix_id, title, diff, file_path, original_snippet=None, fixed_snipp
     branch_name = f"fix/{fix_id}"
     original_branch = get_current_branch()
 
+    # Ensure baseline exists and index is clean before proceeding
+    ensure_baseline()
+    ensure_clean_index()
+
     # Check if this fix branch already exists
     if branch_exists(branch_name):
         return False, f"Fix branch '{branch_name}' already exists. This fix has already been applied."
@@ -270,6 +317,10 @@ def deploy_fixes():
 
     original_branch = get_current_branch()
 
+    # Ensure baseline exists and index is clean before proceeding
+    ensure_baseline()
+    ensure_clean_index()
+
     # Stash any uncommitted changes
     git("stash", "push", "-m", "auto-stash-before-deploy")
 
@@ -374,6 +425,54 @@ def unapply_fix(fix_id):
     return True, f"Fix '{fix_id}' removed"
 
 
+def reset_state():
+    """
+    Reset everything. Delete all fix branches, deploy branch,
+    and recreate the baseline tag from the current HEAD.
+    """
+    # Force abort any ongoing merge or rebase
+    git("merge", "--abort")
+    git("am", "--abort")
+    
+    # Reset to clear any unresolved index
+    git("reset", "--hard", "HEAD")
+    git("clean", "-fd")
+
+    tracker = load_applied_fixes()
+    fix_list = tracker.get("fixes", [])
+
+    # Delete fix branches
+    for fix in fix_list:
+        branch = fix.get("branch")
+        if branch and branch_exists(branch):
+            git("branch", "-D", branch)
+
+    # Delete deploy branch
+    if branch_exists("deploy"):
+        git("branch", "-D", "deploy")
+
+    # Remove baseline tag
+    git("tag", "-d", BASELINE_TAG)
+
+    # Clear applied fixes file
+    save_applied_fixes({"fixes": []})
+
+    # Clear generated fixes manifest
+    try:
+        with open(GENERATED_FIXES_FILE, "w") as f:
+            json.dump({
+                "executiveSummary": "Patcher reset. Fresh analysis required.",
+                "fixes": []
+            }, f, indent=2)
+    except Exception as e:
+        sys.stderr.write(f"Warning: Failed to clear generated-fixes.json: {e}\n")
+
+    # Re-initialize baseline from current HEAD
+    ensure_baseline()
+
+    return True, "Patcher state reset. Fresh baseline created from current state."
+
+
 if __name__ == "__main__":
     try:
         input_data = sys.stdin.read()
@@ -414,6 +513,9 @@ if __name__ == "__main__":
                 print(json.dumps({"success": False, "error": "Missing fixId"}))
                 sys.exit(1)
             success, result = unapply_fix(fix_id)
+
+        elif action == "reset":
+            success, result = reset_state()
 
         else:
             print(json.dumps({"success": False, "error": f"Unknown action: {action}"}))

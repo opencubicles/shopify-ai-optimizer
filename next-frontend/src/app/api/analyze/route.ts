@@ -3,10 +3,47 @@ import { NextRequest, NextResponse } from "next/server";
 import { ReportGenerator } from "lighthouse/report/generator/report-generator.js";
 import fs from "fs";
 import path from "path";
+import { spawn } from "child_process";
+
+function callPatcher(inputData: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+        const pythonScript = path.join(process.cwd(), "..", "scripts", "patcher.py");
+        const child = spawn("python3", [pythonScript]);
+        let stdout = "";
+        let stderr = "";
+
+        child.stdout.on("data", (data) => stdout += data.toString());
+        child.stderr.on("data", (data) => stderr += data.toString());
+
+        child.on("close", (code) => {
+            if (code !== 0) {
+                reject(new Error(stderr || `Python exit code ${code}`));
+                return;
+            }
+            try {
+                resolve(JSON.parse(stdout));
+            } catch (e) {
+                reject(new Error(`Failed to parse output: ${stdout}`));
+            }
+        });
+
+        child.stdin.write(JSON.stringify(inputData));
+        child.stdin.end();
+    });
+}
 
 export async function POST(req: NextRequest) {
     try {
         const { url, device = "mobile" } = await req.json();
+
+        // AUTOMATIC RESET ON ANALYZE
+        console.log("[COREWATCH] Auto-resetting patcher for fresh analysis...");
+        try {
+            await callPatcher({ action: "reset" });
+            console.log("[COREWATCH] Reset completed.");
+        } catch (rErr) {
+            console.error("[COREWATCH] Reset during analysis failed (non-fatal):", rErr);
+        }
 
         if (!url) return NextResponse.json({ error: "URL is required" }, { status: 400 });
 

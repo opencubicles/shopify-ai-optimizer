@@ -52,6 +52,7 @@ import {
   Edit3,
   Copy,
   Clipboard,
+  Trash2,
 } from "lucide-react";
 import styles from "./page.module.css";
 
@@ -113,6 +114,7 @@ export default function AutoDeployDashboard() {
   const [deployResult, setDeployResult] = useState<any>(null);
   const [showDeployModal, setShowDeployModal] = useState(false);
   const [appliedFixIds, setAppliedFixIds] = useState<Set<string>>(new Set());
+  const [resetLoading, setResetLoading] = useState(false);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -326,6 +328,27 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
     }
   };
 
+  const handleResetPatcher = async () => {
+    if (!confirm("Resetting will delete all fix branches and recreate the baseline. Continue?")) return;
+    setResetLoading(true);
+    try {
+      const response = await fetch("/api/reset-patcher", { method: "POST" });
+      const data = await response.json();
+      if (data.success) {
+        setAppliedFixIds(new Set());
+        setGlobalFixes(null);
+        setFixesIdentified(false);
+        alert("✅ Patcher state reset to fresh baseline.");
+      } else {
+        throw new Error(data.error || "Reset failed");
+      }
+    } catch (e: any) {
+      alert("Error: " + e.message);
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   const handleBatchApplyLowRisk = async () => {
     const lowRiskFixes = globalFixes?.fixes?.filter((f: any) => f.riskLevel === "Low") || [];
     if (lowRiskFixes.length === 0) return;
@@ -472,9 +495,20 @@ SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.jso
               <button className={activeTab === 'dashboard' ? styles.activeTab : ""} onClick={() => setActiveTab('dashboard')}><Zap size={16} /> AI Suggestions</button>
               <button className={activeTab === 'lighthouse' ? styles.activeTab : ""} onClick={() => setActiveTab('lighthouse')}><Eye size={16} /> Full Report</button>
               {result && (
-                <button className={styles.syncBtn} onClick={handleSyncFixes} title="Sync latest fixes from manifest">
-                  <RefreshCw size={14} />
-                </button>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button className={styles.syncBtn} onClick={handleSyncFixes} title="Sync latest fixes from manifest">
+                    <RefreshCw size={14} />
+                  </button>
+                  <button
+                    className={styles.syncBtn}
+                    onClick={handleResetPatcher}
+                    disabled={resetLoading}
+                    title="Reset Patcher (Clears fix branches & restarts baseline)"
+                    style={{ borderColor: '#ff4e42', color: '#ff4e42' }}
+                  >
+                    {resetLoading ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                  </button>
+                </div>
               )}
 
             </div>
