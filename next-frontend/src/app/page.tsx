@@ -236,14 +236,16 @@ ISSUE: ${title}
 TARGETS TO OPTIMIZE:
 ${targets}
 
-TASK: Generate individual surgical patches for EVERY asset listed above AND SAVE RESULTS TO JSON.
-MISSION PROTOCOL: Use a UNIFIED DIFF (unidiff) approach with at least 3 lines of context. Your output must contain a character-perfect diff for each fix.
-EXPLANATION STANDARD: The 'explanation' field MUST be verbose. Detail (1) The Technical Mistake in current code, (2) Exactly how the patch fixes it, and (3) Strategic advantage of this change.
-FORMAT: Return output ONLY as a JSON ARRAY [...] of objects nested inside a 'fixes' key, with an 'executiveSummary' at the root.
-REQUIRED KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, diff, linkedNodeId (matching the specific Row ID).
-DIFF FORMAT: Standard unified diff (---/+++/@@/-/+).
+MISSION PROTOCOL:
+1. MANDATORY PRE-FLIGHT: Confirm ownership, template order, and section.index before patching.
+2. PLATFORM RULES: Resolve LCP lazy-loading/reveal conflicts. Use fetchpriority='high' and preload hints.
+3. SCOPING: Use section.index branching to isolate above-fold optimizations.
 
-SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json`;
+TASK: Generate individual surgical patches for EVERY asset listed above AND SAVE RESULTS TO JSON.
+DIFF PROTOCOL: Use character-perfect unidiff with 3+ lines of context.
+EXPLANATION: Provide exact Mistake, Fix Strategy (including widths/media logic), and Strategic Advantage.
+SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json
+REQUIRED KEYS: executiveSummary, fixes: [{id, linkedNodeId, title, filePath, targetAsset, explanation, originalSnippet, fixedSnippet, diff}]`;
     } else {
       const resource = itemOrItems.url || itemOrItems.text || itemOrItems.label || "General Resource";
       resourceLabel = resource;
@@ -252,14 +254,26 @@ ID: ${nodeId}
 Issue Type: ${title}
 Specific Resource: ${resource}
 
-TASK: Review ONLY this specific asset, generate a surgical performance fix, AND SAVE TO JSON.
-MISSION PROTOCOL: Use a UNIFIED DIFF (unidiff) approach with at least 3 lines of context. Your output must contain a character-perfect diff for the fix.
-EXPLANATION STANDARD: The 'explanation' field MUST be verbose. Detail (1) The Technical Mistake in current code, (2) Exactly how the patch fixes it, and (3) Strategic advantage of this change.
-FORMAT: Return output ONLY as a JSON object with a 'fixes' array (containing this one fix) and an 'executiveSummary'.
-REQUIRED KEYS: id, title, explanation, filePath, targetAsset, originalSnippet, fixedSnippet, diff, linkedNodeId (set to '${nodeId}').
-DIFF FORMAT: Standard unified diff (---/+++/@@/-/+).
+MANDATORY PRE-FLIGHT — DO NOT WRITE ANY CODE UNTIL ALL 8 STEPS ARE COMPLETE:
+1. STEP 1 — ASSET OWNERSHIP: Determine if assets/ or shopify://
+2. STEP 2 — TEMPLATE CONFIRMATION: Read template JSON for section type/order.
+3. STEP 3 — SECTION INDEX VERIFICATION: Calculate section.index (1-based) from order[].
+4. STEP 4 — SETTINGS CONFIRMATION: Confirm image settings match target asset.
+5. STEP 5 — SCOPE RULE: Identify where image object is in scope.
+6. STEP 6 — CONFLICT DETECTION: Resolve lazy loading/reveal/fetchpriority in one patch.
+7. STEP 7 — MULTI-INSTANCE CHECK: Use section.index branching if needed.
+8. STEP 8 — ABOVE-FOLD CONFIRMATION: Confirm image is LCP candidate.
 
-SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json`;
+SHOPIFY & LIGHTHOUSE RULES:
+- LCP image must never have loading: 'lazy' or reveal: true.
+- LCP image must have fetchpriority='high' and matching preload with imagesrcset + imagesizes.
+- Never hardcode CDN URLs. Use section.index for above-fold instances.
+
+TASK: Generate a surgical performance fix and save output to JSON.
+PROTOCOL: Use unidiff with 3+ context lines. No code outside minimal scope.
+EXPLANATION: Detail (1) Technical Mistake, (2) How patch fixes it (widths, media, index), (3) Strategic Advantage.
+SAVE TO: /var/www/html/shopify-new/shopify-ai-optimizer/data/generated-fixes.json
+REQUIRED KEYS: executiveSummary, fixes: [{id, linkedNodeId, title, filePath, targetAsset, explanation, originalSnippet, fixedSnippet, diff}]`;
     }
 
     setActivePrompt({ nodeId, title, resource: resourceLabel, promptText, isBatch, count: isBatch ? itemOrItems.length : 1 });

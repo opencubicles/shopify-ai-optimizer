@@ -360,23 +360,36 @@ def deploy_fixes():
         if conflicts:
             # Stay on deploy with partial merges for inspection
             return False, {
-                "message": f"Deployed {len(merged)} fixes, {len(conflicts)} conflicts",
+                "message": f"Deployed {len(merged)} fixes, {len(conflicts)} conflicts. Review 'deploy' branch.",
                 "merged": merged,
                 "conflicts": conflicts
             }
 
+        # FINALIZATION: Merge the successful deploy branch into master
+        git("checkout", "master")
+        merge_res = git("merge", "--no-ff", "deploy", "-m", f"[COREWATCH] Finalized performance mission with {len(merged)} fixes")
+        
+        if merge_res.returncode != 0:
+            return False, f"Failed to merge deploy result into master: {merge_res.stderr}"
+
+        # Clean up deploy branch as it is now merged
+        git("branch", "-D", "deploy")
+
         return True, {
-            "message": f"All {len(merged)} fixes deployed successfully",
+            "message": f"All {len(merged)} fixes finalized and merged into master.",
             "merged": merged,
-            "branch": "deploy"
+            "branch": "master"
         }
 
     except Exception as e:
         return False, f"Deploy error: {str(e)}"
     finally:
-        # Do NOT switch back — stay on deploy so working tree is ready
-        # Pop stash on deploy branch
-        git("stash", "pop")
+        # We should end on master if we merged, or stay on deploy if we didn't (handled in try/catch)
+        try:
+            # Attempt to pop stash if it exists
+            git("stash", "pop")
+        except:
+            pass
 
 
 def get_status():
@@ -430,6 +443,9 @@ def reset_state():
     Reset everything. Delete all fix branches, deploy branch,
     and recreate the baseline tag from the current HEAD.
     """
+    # Switch to master first to ensure we aren't on a branch we are deleting
+    git("checkout", "master")
+    
     # Force abort any ongoing merge or rebase
     git("merge", "--abort")
     git("am", "--abort")
@@ -438,21 +454,21 @@ def reset_state():
     git("reset", "--hard", "HEAD")
     git("clean", "-fd")
 
-    tracker = load_applied_fixes()
-    fix_list = tracker.get("fixes", [])
-
-    # Delete fix branches
-    for fix in fix_list:
-        branch = fix.get("branch")
-        if branch and branch_exists(branch):
-            git("branch", "-D", branch)
+    # Delete ALL branches starting with fix/ (manifest-independent)
+    r = git("branch", "--list", "fix/*")
+    for b in r.stdout.split('\n'):
+        branch_name = b.strip().replace('* ', '')
+        if branch_name:
+            git("branch", "-D", branch_name)
 
     # Delete deploy branch
     if branch_exists("deploy"):
         git("branch", "-D", "deploy")
 
-    # Remove baseline tag
-    git("tag", "-d", BASELINE_TAG)
+    # Remove baseline tag if it exists
+    r = git("tag", "-l", BASELINE_TAG)
+    if r.stdout.strip() == BASELINE_TAG:
+        git("tag", "-d", BASELINE_TAG)
 
     # Clear applied fixes file
     save_applied_fixes({"fixes": []})
